@@ -80,7 +80,7 @@ python3 $SK/scripts/board.py board.yaml -o out/board --diagram diagram.yaml --fl
 ```
 python3 $SK/scripts/viewer.py diagram.yaml -o out/viewer.html --decisions diagram_decisions.yaml [--floorplan floorplan.yaml] [--board board.yaml]
 python3 $SK/scripts/drawio.py diagram.yaml -o out/diagram.drawio      # ステップ/グループ/詳細/注記 = レイヤ
-python3 $SK/scripts/clocktree.py diagram.yaml -o out/clock_tree.svg --png   # クロック系統図(源→PLL→分周/CG→ドメイン、CDC一覧)
+python3 $SK/scripts/clocktree.py diagram.yaml -o out/ --png   # クロック系統図(詳しくは diagrams/clock-tree/GUIDE.md)
 python3 $SK/scripts/memmap.py diagram.yaml -o out --png                    # メモリマップ図・表(memmap.md)と範囲の検査
 python3 $SK/scripts/decisions.py status --md > out/decisions.md       # 仕様書の「決定事項/未決事項」表
 ```

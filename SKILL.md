@@ -53,7 +53,7 @@ description: 半導体チップの仕様書に載せる図を作るハーネス�
 | バス構成図(アーキテクチャ)・メモリマップ・到達性 | 使える | `diagrams/bus-architecture/GUIDE.md` | `chipdiag.py` `layout.py` `memmap.py` `reach.py` |
 | ブロック間の接続図(中心のブロックと接続元・接続先、端子の入出力・幅) | 使える | `diagrams/block-interface/GUIDE.md` | `ifdiag.py` |
 | 動作のストーリーボード(ステップ・レイテンシ目安) | 使える(バス構成図を使い回してコマを並べる) | `diagrams/storyboard/GUIDE.md` | `storyboard.py`(`chipdiag.py` `latency.py`) |
-| クロック系統図(源→PLL→分周/ゲート→ドメイン、CDC 一覧) | 使える(改善予定) | `diagrams/bus-architecture/GUIDE.md` の G3.5 | `clocktree.py` |
+| クロック系統図(源→PLL→MUX→分周→ゲート→ドメイン、CDC と比率同期) | 使える | `diagrams/clock-tree/GUIDE.md` | `clocktree.py` |
 | フロアプラン・ボード配置 | 使える | `diagrams/bus-architecture/GUIDE.md` の G4 | `floorplan.py` `board.py` |
 | リセット系統図(源→OR→同期化→ドメイン、解除シーケンス、RDC) | 使える | `diagrams/reset-tree/GUIDE.md` | `resettree.py` |
 | ゲートレベル図 | 予定 | — | — |

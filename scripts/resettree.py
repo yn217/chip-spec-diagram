@@ -219,21 +219,47 @@ class ResetTree:
         c, doms, srcs = self.c, self.doms, self.srcs
         mem = self.members()
         o, ow = [], []                                   # ow: 線(下層)
-        # 列
-        W_SRC = max([150] + [wlen(s.get("label", s["id"])) * 7.2 + 24 for s in srcs])
-        X_EXT = 24
-        chip_x = X_EXT + W_SRC + 34
-        X_INT = chip_x + 18
+        # 列: リセット源ごとに 1 列。源の札を列の上に置き、縦線から各ドメインの OR へ右に枝を出す
+        use = {x["id"]: sum(x["id"] in d.get("sources", []) for d in doms) for x in srcs}
+        srcs = sorted(srcs, key=lambda x: (-use[x["id"]], self.srcs.index(x)))   # 多く使う源ほど左(短い列が右に来て交差が減る)
         ns = len(srcs)
-        X_TR = X_INT + W_SRC + 22                         # 幹線の列
-        TR_G = 14
-        X_CTL = X_TR + ns * TR_G + 18                     # リセット制御の枠
+        def wrap(t, wmax):
+            import re as _re
+            toks = [x for x in _re.split(r"(?<=\s)|(?=[(（])", t) if x]   # 空白の後・括弧の前で切る
+            out, cur = [], ""
+            for tk in toks:
+                if cur and wlen(cur + tk) * 6.4 > wmax:
+                    out.append(cur.strip()); cur = ""
+                while wlen(tk) * 6.4 > wmax:              # 1 語が長すぎる時だけ文字で切る
+                    k = len(tk)
+                    while k > 1 and wlen(tk[:k]) * 6.4 > wmax:
+                        k -= 1
+                    out.append(tk[:k]); tk = tk[k:]
+                cur += tk
+            if cur.strip():
+                out.append(cur.strip())
+            return out[:3]
+        CS = 104
+        BW = CS - 12
+        labs = {x["id"]: wrap(x.get("label", x["id"]), BW - 10) for x in srcs}
+        BH = 22 + max(len(v) for v in labs.values()) * 14 if srcs else 40
+        chip_x = 24
+        X_C0 = chip_x + 20
+        colx = {x["id"]: X_C0 + i * CS + CS / 2 for i, x in enumerate(srcs)}
+        has_ext = any(x.get("kind") == "pad" for x in srcs)
+        EXT_Y = 44
+        CT = EXT_Y + BH + 22 if has_ext else 50          # チップ枠の上辺
+        INT_Y = CT + 14
+        ROW0 = INT_Y + BH + 34
+        X_CTL = X_C0 + ns * CS + 8                         # リセット制御の枠
         GX, GW = X_CTL + 22, 44                           # OR
         X_ST = GX + GW + 14                               # 伸長・PLL 待ちの文字
         X_SY = X_CTL + 236                                # 同期化
         W_SY = 118
         X_DOM = X_SY + W_SY + 64
         W_DOM = 360
+        SPAL = ["#334155", "#b91c1c", "#0369a1", "#a16207", "#7e22ce", "#15803d", "#c2410c", "#be185d", "#0f766e"]
+        scol = {x["id"]: x.get("color") or SPAL[i % len(SPAL)] for i, x in enumerate(srcs)}
 
         def chips(names, width):
             rows, x, cur = [], 0, []
@@ -245,25 +271,16 @@ class ResetTree:
             if cur:
                 rows.append(cur)
             return rows
-        y = 96
+        y = ROW0
         pos, crow = {}, {}
         for d in doms:
             crow[d["id"]] = chips(mem[d["id"]], W_DOM - 24)
-            k = len([s for s in d.get("sources", []) if s in self.sid])
+            k = len([x for x in d.get("sources", []) if x in self.sid])
             h = max(40 + max(1, len(crow[d["id"]])) * 24, k * 14 + 30, 78)
             pos[d["id"]] = (y, h)
             y += h + 14
         ctl_bot = y
-        # 源の位置: つながるドメインの中心の平均に寄せ、詰める
-        spos = {}
-        for s in srcs:
-            ys = [pos[d["id"]][0] + pos[d["id"]][1] / 2 for d in doms if s["id"] in d.get("sources", [])] or [ctl_bot]
-            spos[s["id"]] = sum(ys) / len(ys) - 22
-        last = 70
-        for s in sorted(srcs, key=lambda s: spos[s["id"]]):
-            spos[s["id"]] = max(spos[s["id"]], last)
-            last = spos[s["id"]] + 44 + 10
-        top_h = max(ctl_bot, last) + 10
+        top_h = ctl_bot + 10
         # RDC 列
         rdc = sorted(self.rdc, key=lambda r: abs(pos[r["a"]][0] - pos[r["b"]][0]))
         xr = X_DOM + W_DOM
@@ -272,7 +289,7 @@ class ResetTree:
         # 波形
         WV_Y = top_h + 40
         nst = max(self.step.values() or [1])
-        wav_rows = [("src", s) for s in srcs if s.get("kind") in ("por", "pad")] + \
+        wav_rows = [("src", x) for x in srcs if x.get("kind") in ("por", "pad")] + \
                    [("pll", p) for p in sorted({p for d in doms for p in d.get("wait", []) if p in self.plls})] + \
                    [("dom", d) for d in doms]
         H = WV_Y + 40 + len(wav_rows) * 30 + 60
@@ -284,60 +301,61 @@ class ResetTree:
                  f'markerUnits="userSpaceOnUse" orient="auto"><path d="M0,1 L10,5 L0,9 z" fill="{INK}"/></marker></defs>'
                  f'<text x="12" y="28" font-size="17" font-weight="800" fill="{INK}">{esc(title)}</text>')
         chip_r = xr + 30 + lanes * 40
-        o.append(f'<rect x="{f(chip_x)}" y="50" width="{f(chip_r - chip_x)}" height="{f(top_h - 50)}" rx="6" fill="#fcfcfd" '
-                 f'stroke="{INK}" stroke-width="2.2"/><text x="{f(chip_x + 10)}" y="68" font-size="13" font-weight="800" '
+        o.append(f'<rect x="{f(chip_x)}" y="{f(CT)}" width="{f(chip_r - chip_x)}" height="{f(top_h - CT)}" rx="6" fill="#fcfcfd" '
+                 f'stroke="{INK}" stroke-width="2.2"/><text x="{f(X_CTL)}" y="{f(CT + 20)}" font-size="13" font-weight="800" '
                  f'fill="{INK}">{esc(c.s.get("chip", {}).get("label", "chip"))}</text>')
         # リセット制御の枠
-        o.append(f'<rect x="{f(X_CTL)}" y="78" width="{f(X_SY - 18 - X_CTL)}" height="{f(ctl_bot - 82)}" rx="5" fill="#f8fafc" '
-                 f'stroke="#475569" stroke-width="1.5" stroke-dasharray="6 3"/><text x="{f(X_CTL + 8)}" y="92" font-size="11.5" '
-                 f'font-weight="800" fill="#475569">リセット制御</text>')
+        o.append(f'<rect x="{f(X_CTL)}" y="{f(ROW0 - 22)}" width="{f(X_SY - 18 - X_CTL)}" height="{f(ctl_bot - ROW0 + 18)}" rx="5" '
+                 f'fill="#f8fafc" stroke="#475569" stroke-width="1.5" stroke-dasharray="6 3"/><text x="{f(X_CTL + 8)}" '
+                 f'y="{f(ROW0 - 8)}" font-size="11.5" font-weight="800" fill="#475569">リセット制御</text>')
         o.append("<!--LINES-->")
-        # 源と幹線
-        sidx = {s["id"]: i for i, s in enumerate(srcs)}
-        joins = {s["id"]: [] for s in srcs}
+        # 枝(列 → OR)
+        sidx = {x["id"]: i for i, x in enumerate(srcs)}
+        joins = {x["id"]: [] for x in srcs}
+        branches = []
         for d in doms:
             y0, h = pos[d["id"]]
-            ins = [s for s in d.get("sources", []) if s in self.sid]
-            ins.sort(key=lambda s: sidx[s])
+            ins = [x for x in d.get("sources", []) if x in self.sid]
+            ins.sort(key=lambda x: sidx[x])
             k = len(ins)
             gh = max(k * 14 + 8, 30)
             gy = y0 + h / 2 - gh / 2
             d["_g"] = (GX, gy, GW, gh)
-            for j, s in enumerate(ins):
+            for j, x in enumerate(ins):
                 iy = gy + gh / 2 + (j - (k - 1) / 2) * 14
-                joins[s].append(iy)
+                joins[x].append(iy)
                 if k > 1:
                     t = (iy - gy) / gh
                     xb = GX + 2 * t * (1 - t) * GW * 0.32
                 else:
                     xb = X_SY
-                tx = X_TR + sidx[s] * TR_G
-                ow.append(f'<path d="M{f(tx)},{f(iy)} L{f(xb)},{f(iy)}" stroke="{INK}" stroke-width="1.4" fill="none"/>'
-                          f'<circle cx="{f(tx)}" cy="{f(iy)}" r="2.8" fill="{INK}"/>')
-        for s in srcs:
-            i = sidx[s["id"]]
-            sy = spos[s["id"]]
-            pad = s.get("kind") == "pad"
-            x = X_EXT if pad else X_INT
-            lab = s.get("label", s["id"])
-            sub = KIND.get(s.get("kind"), s.get("kind", ""))
-            if sub == lab:
-                sub = ""
-            if s.get("polarity") == "low":
+                branches.append((colx[x], iy, xb, scol[x]))
+        # 源の札と縦線(列)
+        for x in srcs:
+            cx_ = colx[x["id"]]
+            pad = x.get("kind") == "pad"
+            by = EXT_Y if pad else INT_Y
+            lab = labs[x["id"]]
+            sub = KIND.get(x.get("kind"), x.get("kind", ""))
+            if x.get("polarity") == "low":
                 sub += "・負論理"
+            col = scol[x["id"]]
             dash = ' stroke-dasharray="5 4"' if pad else ""
-            o.append(f'<rect x="{f(x)}" y="{f(sy)}" width="{W_SRC}" height="44" rx="4" fill="#fff" stroke="#64748b" '
-                     f'stroke-width="1.5"{dash}/><text x="{f(x + W_SRC / 2)}" y="{f(sy + 19)}" font-size="12.5" font-weight="700" '
-                     f'fill="{INK}" text-anchor="middle">{esc(lab)}</text><text x="{f(x + W_SRC / 2)}" y="{f(sy + 35)}" '
-                     f'font-size="10.5" fill="{GRAY}" text-anchor="middle">{esc(sub)}</text>')
-            cy_ = sy + 22
-            tx = X_TR + i * TR_G
+            o.append(f'<rect x="{f(cx_ - BW / 2)}" y="{f(by)}" width="{f(BW)}" height="{f(BH)}" rx="4" fill="#fff" stroke="{col}" '
+                     f'stroke-width="1.6"{dash}/>')
+            for j, t in enumerate(lab):
+                o.append(f'<text x="{f(cx_)}" y="{f(by + 16 + j * 14)}" font-size="11.5" font-weight="800" fill="{col}" '
+                         f'text-anchor="middle">{esc(t)}</text>')
+            o.append(f'<text x="{f(cx_)}" y="{f(by + BH - 7)}" font-size="9.5" fill="{GRAY}" text-anchor="middle">{esc(sub)}</text>')
             if pad:
-                o.append(f'<rect x="{f(chip_x - 8)}" y="{f(cy_ - 8)}" width="16" height="16" fill="#cbd5e1" stroke="{INK}" stroke-width="1.5"/>')
-            ys = joins[s["id"]] + [cy_]
-            ow.append(f'<path d="M{f(x + W_SRC)},{f(cy_)} L{f(tx)},{f(cy_)}" stroke="{INK}" stroke-width="1.4" fill="none"/>')
-            if len(ys) > 1:
-                ow.append(f'<path d="M{f(tx)},{f(min(ys))} L{f(tx)},{f(max(ys))}" stroke="{INK}" stroke-width="1.4" fill="none"/>')
+                o.append(f'<rect x="{f(cx_ - 8)}" y="{f(CT - 8)}" width="16" height="16" fill="#cbd5e1" stroke="{INK}" stroke-width="1.5"/>')
+            if joins[x["id"]]:
+                ow.append(f'<path d="M{f(cx_)},{f(by + BH)} L{f(cx_)},{f(max(joins[x["id"]]))}" stroke="{col}" stroke-width="2" fill="none"/>')
+        # 枝は白い縁取りの上に描く(交差する列が途切れて見え、つながっていないことがわかる)
+        for tx, iy, xb, col in branches:
+            ow.append(f'<path d="M{f(tx + 4)},{f(iy)} L{f(xb)},{f(iy)}" stroke="#fcfcfd" stroke-width="7" fill="none"/>'
+                      f'<path d="M{f(tx)},{f(iy)} L{f(xb)},{f(iy)}" stroke="{col}" stroke-width="1.6" fill="none"/>'
+                      f'<circle cx="{f(tx)}" cy="{f(iy)}" r="3.4" fill="{col}"/>')
         # ドメインの行: OR → 伸長 → 同期化 → ドメイン
         for d in doms:
             y0, h = pos[d["id"]]
@@ -415,7 +433,7 @@ class ResetTree:
             yy = tops + i * 30 + 6
             hi, lo = yy, yy + 16
             if kd == "src":
-                name, t, col = it.get("label", it["id"]), 0.5, "#475569"
+                name, t, col = it.get("label", it["id"]), 0.5, scol.get(it["id"], "#475569")   # 列と同じ色
             elif kd == "pll":
                 name, t, col = f'{self.plls[it].get("label", it)} ロック', 1.5, "#475569"
             else:

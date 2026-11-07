@@ -10,23 +10,27 @@ chip: {label: "アプリケーション SoC(製品規模の設計例)"}
 clocks:
   sources:
     - {id: xtal, label: XTAL, freq: 24MHz, kind: osc}
+    - {id: rc32k, label: RC OSC, freq: 32kHz, kind: rc}
   plls:
-    - {id: arm_pll, label: ARM PLL, in: xtal, freq: 1.8GHz}
-    - {id: sys_pll, label: SYS PLL1/2/3, in: xtal, freq: 800MHz-1GHz, assumed: true}
+    - {id: arm_pll, label: ARM PLL, in: xtal, freq: 1.8GHz, mult: 75}
+    - {id: sys_pll, label: SYS PLL1, in: xtal, freq: 800MHz}
+    - {id: sys_pll2, label: SYS PLL2, in: xtal, freq: 1GHz, assumed: true}
     - {id: dram_pll, label: DRAM PLL, in: xtal, freq: 1GHz}
+  muxes:
+    - {id: cpu_sel, label: CPU クロック切替, in: [arm_pll, xtal], default: arm_pll, sel: SW(起動時は XTAL)}
   domains:
-    - {id: a53,  label: CPU,   freq: 1.8GHz, from: arm_pll, color: "#2563eb"}
+    - {id: a53,  label: CPU,   freq: 1.8GHz, from: cpu_sel, gate: auto, dvfs: [1.8GHz, 1.2GHz, 800MHz], color: "#2563eb"}
     - {id: m7,   label: MCU,    freq: 800MHz, from: sys_pll, color: "#0891b2"}
     - {id: dsp,  label: DSP,   freq: 800MHz, from: sys_pll, color: "#0d9488"}
     - {id: noc,  label: NoC,   freq: 800MHz, from: sys_pll, assumed: true, color: "#475569"}
-    - {id: ml,   label: ML,    freq: 1GHz,   from: sys_pll, assumed: true, color: "#9333ea"}
-    - {id: gpu,  label: GPU,   freq: 1GHz,   from: sys_pll, assumed: true, color: "#db2777"}
-    - {id: vpu,  label: VPU,   freq: 800MHz, from: sys_pll, assumed: true, color: "#ea580c"}
-    - {id: media, label: MEDIA, freq: 500MHz, from: sys_pll, assumed: true, color: "#ca8a04"}
-    - {id: hsio, label: HSIO,  freq: 500MHz, from: sys_pll, assumed: true, color: "#16a34a"}
-    - {id: ipg,  label: IPG,   freq: 133MHz, from: sys_pll, assumed: true, color: "#64748b"}
-    - {id: rt,   label: RT,    freq: 400MHz, from: sys_pll, assumed: true, color: "#15803d"}
-    - {id: aud,  label: AUDIO, freq: 400MHz, from: sys_pll, assumed: true, color: "#6d28d9"}
+    - {id: ml,   label: ML,    freq: 1GHz,   from: sys_pll2, gate: sw, assumed: true, color: "#9333ea"}
+    - {id: gpu,  label: GPU,   freq: 1GHz,   from: sys_pll2, gate: sw, assumed: true, color: "#db2777"}
+    - {id: vpu,  label: VPU,   freq: 800MHz, from: sys_pll, gate: sw, assumed: true, color: "#ea580c"}
+    - {id: media, label: MEDIA, freq: 500MHz, from: sys_pll2, div: 2, assumed: true, color: "#ca8a04"}
+    - {id: hsio, label: HSIO,  freq: 500MHz, from: sys_pll2, div: 2, assumed: true, color: "#16a34a"}
+    - {id: ipg,  label: IPG,   freq: 133MHz, from: noc, div: 6, assumed: true, color: "#64748b"}
+    - {id: rt,   label: RT,    freq: 400MHz, from: m7, div: 2, assumed: true, color: "#15803d"}
+    - {id: aud,  label: AUDIO, freq: 400MHz, from: dsp, div: 2, gate: sw, assumed: true, color: "#6d28d9"}
     - {id: ddr,  label: DDR,   freq: 1GHz,   from: dram_pll, color: "#b45309"}
 
 external:
@@ -313,8 +317,8 @@ resets:
   - {id: rst_cpu, label: CPU, sources: [por, rst_n, wdt, sw_cpu, dbg], clock_domain: a53, wait: [arm_pll], after: [rst_sys],
      isolation: true}
   - {id: rst_ddr, label: DDR, sources: [por, rst_n, wdt], clock_domain: ddr, stretch: 8, wait: [dram_pll], after: [rst_sys]}
-  - {id: rst_gpu, label: GPU, sources: [por, rst_n, wdt, sw_mm], clock_domain: gpu, after: [rst_ddr], isolation: true}
+  - {id: rst_gpu, label: GPU, sources: [por, rst_n, wdt, sw_mm], clock_domain: gpu, wait: [sys_pll2], after: [rst_ddr], isolation: true}
   - {id: rst_vpu, label: VPU, sources: [por, rst_n, wdt, sw_mm], clock_domain: vpu, after: [rst_ddr], isolation: true}
-  - {id: rst_ml, label: ML, sources: [por, rst_n, wdt, sw_mm], clock_domain: ml, after: [rst_ddr], isolation: true}
+  - {id: rst_ml, label: ML, sources: [por, rst_n, wdt, sw_mm], clock_domain: ml, wait: [sys_pll2], after: [rst_ddr], isolation: true}
   - {id: rst_rt, label: RT(MCU), sources: [por, rst_n], clock_domain: rt, after: [rst_sys], isolation: true}
   - {id: rst_aud, label: Audio, sources: [por, rst_n, wdt], clock_domain: aud, after: [rst_sys]}

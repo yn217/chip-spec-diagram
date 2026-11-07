@@ -13,7 +13,8 @@
 | バス構成図(アーキテクチャ)・メモリマップ・到達性/ループ検査 | `diagrams/bus-architecture/GUIDE.md` | `examples/product_soc.yaml` `examples/multiport_dram.yaml` `examples/stress_soc.yaml` |
 | ブロック間の接続図(中心のブロックと接続元・接続先、端子の入出力・幅) | `diagrams/block-interface/GUIDE.md` | `examples/interface_npu.yaml` |
 | 動作のストーリーボード(ステップ・レイテンシ目安) | `diagrams/storyboard/GUIDE.md` | `examples/npu_soc.yaml` `examples/latency_demo.yaml` |
-| クロック系統図・フロアプラン・ボード配置 | バス構成図の G3.5/G4 | `examples/npu_soc.yaml` `examples/floorplan.yaml` `examples/board.yaml` |
+| クロック系統図(MUX・分周・ゲート・DVFS、CDC と比率同期) | `diagrams/clock-tree/GUIDE.md` | `examples/product_soc.yaml` `examples/npu_soc.yaml` |
+| フロアプラン・ボード配置 | バス構成図の G4 | `examples/floorplan.yaml` `examples/board.yaml` |
 | リセット系統図(解除シーケンス・RDC) | `diagrams/reset-tree/GUIDE.md` | `examples/npu_soc.yaml` `examples/product_soc.yaml` |
 | ゲートレベル図 | 予定 | — |
 
@@ -38,7 +39,7 @@
 | `drawio.py` | draw.io 出力（ステップ・グループをレイヤに分ける） |
 | `ip_size.py` | LEF/Liberty/CSV からIPの寸法を取得 |
 | `floorplan.py` | 実寸フロアプラン（見積もり・自動配置・重なり/使用率チェック・draw.io換算） |
-| `clocktree.py` | クロック系統図（源→PLL→分周/ゲート→ドメイン、CDC一覧） |
+| `clocktree.py` | クロック系統図(源→PLL→MUX→分周→ゲート→ドメイン、周波数の検算、CDC と比率同期の区別) |
 | `rules.py` | 作図ルール台帳（指摘をルールとして追加、出す前のチェックリスト、自動化されていないルールの一覧） |
 | `board.py` | ボード配置とIOの辺の推奨、論理図・フロアプランとの突き合わせ |
 | `resettree.py` | リセット系統図(源・OR・同期化・ドメイン・解除シーケンス・RDC のチェック) |

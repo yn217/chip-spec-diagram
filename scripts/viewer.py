@@ -162,9 +162,13 @@ def build(spec_path, out, decisions=None, floorplan=None, board=None):
         res = clocktree.build(c)
         if res[0]:
             svg_ck, wk, table = res
-            tr = "".join(f"<tr><td>{esc(a)}</td><td>{esc(b)}</td><td>{esc(', '.join(v))}</td></tr>" for a, b, v in table)
+            ct = clocktree.build.last
+            tr = "".join(f"<tr><td>{esc(ct.lab(r['a']))}</td><td>{esc(ct.lab(r['b']))}</td>"
+                         f"<td>{'非同期(CDC)' if r['kind'] == 'async' else '比率同期 ' + r['ratio']}</td><td>{esc(', '.join(r['via']))}</td></tr>"
+                         for r in ct.cross)
             parts.append(f"<h2>クロック系統図</h2><div class='frame'>{svg_ck}</div>"
-                         f"<div class='tw'><table><tr><th>ドメイン</th><th>ドメイン</th><th>非同期の乗り換え(CDC)</th></tr>{tr}</table></div>")
+                         f"<div class='tw'><table><tr><th>ドメイン</th><th>ドメイン</th><th>種類</th><th>経路</th></tr>{tr}</table></div>"
+                         + (f"<div class='warn'>{esc(chr(10).join(wk))}</div>" if wk else ""))
     if spec.get("resets", {}).get("domains"):
         import resettree
         svg_rt, rt, md_rt = resettree.build(c)

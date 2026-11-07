@@ -40,9 +40,13 @@ buses:
     level: 1                            # 段(省略時はブリッジから自動)
     attach: [apbbr.m, uart.s]
 clocks:                                 # クロック系統(clocktree.py)。clock_domain から周波数とCDCを自動判定
-  sources: [{id: xtal, label: XTAL, freq: 25MHz, kind: osc}, {id: pcie_ref, label: PCIe REFCLK, freq: 100MHz, kind: pad}]
-  plls:    [{id: pll_sys, label: SYS PLL, in: xtal, freq: 2.0GHz}]
-  domains: [{id: core_clk, label: core, freq: 1GHz, from: pll_sys, div: 2, gate: true, color: "#2563eb"}]
+  sources: [{id: xtal, label: XTAL, freq: 25MHz, kind: osc}, {id: pcie_ref, label: PCIe REFCLK, freq: 100MHz, kind: pad}]  # osc|pad|rc
+  plls:    [{id: pll_sys, label: SYS PLL, in: xtal, freq: 2.0GHz, mult: 80}]          # mult/refdiv/postdiv は任意(検算)
+  muxes:   [{id: cpu_sel, label: CPU clk sel, in: [pll_arm, xtal], default: pll_arm, sel: SW}]   # クロック切替
+  domains:
+    - {id: core_clk, label: core, freq: 1GHz, from: pll_sys, div: 2, gate: sw, color: "#2563eb"}   # gate: true|sw|auto
+    - {id: ipg, label: IPG, freq: 250MHz, from: core_clk, div: 4}         # 別ドメインから分周(比率同期になる)
+    - {id: cpu, label: CPU, freq: 1.8GHz, from: cpu_sel, dvfs: [1.8GHz, 1.2GHz]}
 blocks:
   - id: npu
     label: NPU                          # 16字以内
