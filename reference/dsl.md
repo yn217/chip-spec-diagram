@@ -168,6 +168,9 @@ blocks:
 
 ### resets(リセット系統図: `scripts/resettree.py`)
 ```yaml
+power:                                   # 任意: 解除時の電源ドロップを確認する時
+  rails:
+    - {id: vdd_soc, label: VDD_SOC, volt: 0.80V, max_step: 1.2A, droop: 40mV/A}
 resets:
   default: rst_sys                       # reset_domain のないブロック・バスの所属
   controller: {always_on: true}          # リセット制御の置き場所(always_on / domain: / block:)。自己リセットの確認に使う
@@ -188,6 +191,11 @@ resets:
       isolation: false                   # 単独リセット時の切り離し/静止化
       signal: rst_sys_n                  # 省略時 <id>_n
       style: async                       # async = 非同期アサート・同期解除(既定)/ sync = 同期リセット
+      rail: vdd_soc                      # 電源レール(power.rails)
+      load: 500mA                        # 解除・クロック開始で増える電流
+      stagger: 4                         # N 回に分けて解除(段階解除)
+      power_switch: {inrush: 300mA}      # 電源スイッチ(突入電流)。isolation が要る
+    # BOD の源: {id: bod, label: BOD, kind: bod, rail: vdd_soc, threshold: 0.70V, hyst: 20mV}
 blocks:
   - {id: npu, reset_domain: rst_npu, ...}   # 子ブロック・付属ブロックは親を継ぐ
 ```

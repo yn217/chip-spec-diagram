@@ -303,23 +303,30 @@ links:
   - {from: cam.p, to: pad_csi, dir: fwd}
   - {from: media.dout, to: pad_disp}
   - {from: pad_disp, to: disp.p, dir: fwd}
+power:                            # 電源レール(リセット解除時の電流の跳ね上がりと電圧低下の確認)
+  rails:
+  - {id: vdd_arm, label: VDD_ARM, volt: 0.90V, max_step: 1.0A, droop: 50mV/A}
+  - {id: vdd_soc, label: VDD_SOC, volt: 0.80V, max_step: 1.2A, droop: 40mV/A}
+  - {id: vdd_gpu, label: VDD_GPU, volt: 0.85V, max_step: 1.5A, droop: 45mV/A, assumed: true}
 resets:
   controller: {always_on: true}   # リセット制御は常時オン(POR だけでリセット)
   default: rst_sys
   sources:
   - {id: por, label: POR, kind: por, type: async}
+  - {id: bod, label: BOD, kind: bod, type: async, rail: vdd_soc, threshold: 0.70V, hyst: 20mV}
   - {id: rst_n, label: RST_N, kind: pad, polarity: low, type: async}
   - {id: wdt, label: WDT タイムアウト, kind: wdt, type: sync, from: wdog}
   - {id: sw_cpu, label: SW リセット(CPU), kind: sw, type: sync, from: sysctl}
   - {id: sw_mm, label: SW リセット(GPU/VPU/ML), kind: sw, type: sync, from: sysctl}
   - {id: dbg, label: デバッガ, kind: dbg, type: sync, clock: TCK 25MHz(仮)}
   domains:
-  - {id: rst_sys, label: system(NoC・周辺), sources: [por, rst_n, wdt], clock_domain: noc, stretch: 32, wait: [sys_pll]}
-  - {id: rst_cpu, label: CPU, sources: [por, rst_n, wdt, sw_cpu, dbg], clock_domain: a53, wait: [arm_pll], after: [rst_sys],
+  - {id: rst_sys, label: system(NoC・周辺), sources: [por, bod, rst_n, wdt], rail: vdd_soc, load: 500mA, clock_domain: noc, stretch: 32, wait: [sys_pll]}
+  - {id: rst_cpu, label: CPU, sources: [por, bod, rst_n, wdt, sw_cpu, dbg], rail: vdd_arm, load: 1.2A, stagger: 4, clock_domain: a53, wait: [arm_pll], after: [rst_sys],
      isolation: true}
-  - {id: rst_ddr, label: DDR, sources: [por, rst_n, wdt], clock_domain: ddr, stretch: 8, wait: [dram_pll], after: [rst_sys]}
-  - {id: rst_gpu, label: GPU, sources: [por, rst_n, wdt, sw_mm], clock_domain: gpu, wait: [sys_pll2], after: [rst_ddr], isolation: true}
-  - {id: rst_vpu, label: VPU, sources: [por, rst_n, wdt, sw_mm], clock_domain: vpu, after: [rst_ddr], isolation: true}
-  - {id: rst_ml, label: ML, sources: [por, rst_n, wdt, sw_mm], clock_domain: ml, wait: [sys_pll2], after: [rst_ddr], isolation: true}
-  - {id: rst_rt, label: RT(MCU), sources: [por, rst_n], clock_domain: rt, after: [rst_sys], isolation: true}
-  - {id: rst_aud, label: Audio, sources: [por, rst_n, wdt], clock_domain: aud, style: sync, after: [rst_sys]}
+  - {id: rst_ddr, label: DDR, sources: [por, bod, rst_n, wdt], rail: vdd_soc, load: 300mA, clock_domain: ddr, stretch: 8, wait: [dram_pll], after: [rst_sys]}
+  - {id: rst_gpu, label: GPU, sources: [por, bod, rst_n, wdt, sw_mm], rail: vdd_gpu, load: 900mA, clock_domain: gpu, wait: [sys_pll2], after: [rst_ddr], isolation: true}
+  - {id: rst_vpu, label: VPU, sources: [por, bod, rst_n, wdt, sw_mm], rail: vdd_soc, load: 400mA, clock_domain: vpu, after: [rst_ddr], isolation: true}
+  - {id: rst_ml, label: ML, sources: [por, bod, rst_n, wdt, sw_mm], rail: vdd_gpu, load: 800mA, stagger: 2,
+     power_switch: {inrush: 300mA}, clock_domain: ml, wait: [sys_pll2], after: [rst_ddr], isolation: true}
+  - {id: rst_rt, label: RT(MCU), sources: [por, bod, rst_n], rail: vdd_soc, load: 100mA, clock_domain: rt, after: [rst_sys], isolation: true}
+  - {id: rst_aud, label: Audio, sources: [por, bod, rst_n, wdt], rail: vdd_soc, load: 80mA, clock_domain: aud, style: sync, after: [rst_sys]}

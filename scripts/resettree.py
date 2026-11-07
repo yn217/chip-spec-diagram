@@ -32,7 +32,7 @@ diagram.yaml の resets: を使う
                 リセットする(間接: 制御の伸長・シーケンスごと消える)。resets.controller: {always_on: true | domain: | block: }
   [RDC] 片側だけが単独でリセットされうる接続(相手が動いている時に X/グリッチが届く)。isolation: true なら対策ありとして表示のみ
 """
-import os, sys, argparse
+import os, sys, re, argparse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from chipdiag import Chip, load, esc, wlen, INK, to_png
 
@@ -44,6 +44,25 @@ RDC_C, OK_C, GRAY = "#dc2626", "#16a34a", "#64748b"
 
 def f(v):
     return f"{v:.1f}".rstrip("0").rstrip(".")
+
+
+def amp(v):
+    m = re.fullmatch(r"\s*([\d.]+)\s*(mA|A)\s*", str(v)) if v is not None else None
+    return float(m.group(1)) * (1e-3 if m.group(2) == "mA" else 1) if m else None
+
+
+def volt(v):
+    m = re.fullmatch(r"\s*([\d.]+)\s*(mV|V)\s*", str(v)) if v is not None else None
+    return float(m.group(1)) * (1e-3 if m.group(2) == "mV" else 1) if m else None
+
+
+def mv_per_a(v):
+    m = re.fullmatch(r"\s*([\d.]+)\s*mV/A\s*", str(v)) if v is not None else None
+    return float(m.group(1)) * 1e-3 if m else None
+
+
+def fa(a):
+    return f"{a:.2f}".rstrip("0").rstrip(".") + "A" if a >= 1 else f"{a * 1000:.0f}mA"
 
 
 class ResetTree:
@@ -196,6 +215,7 @@ class ResetTree:
         self.step = self.order()
         ranks = sorted(set(self.step.values()))
         self.rank = {k: ranks.index(v) + 1 for k, v in self.step.items()}
+        self.power()
         self.rdc = self.find_rdc()
 
     def _waits_via_after(self, d, pll, seen=None):
@@ -275,6 +295,70 @@ class ResetTree:
                     self.warn.append(f"[RDC] {self.dl(a)} は {lab} で単独リセットされるが、{self.dl(other)} は動いたまま"
                                      f"({', '.join(sorted(via))})。バスの切り離し/静止化を入れるか isolation: true")
         return out
+
+    def power(self):
+        """電源レールごとの電流の跳ね上がり(解除・クロック開始・電源スイッチの突入)を段ごとに集計し、許容値・BOD と比べる"""
+        pw = self.c.s.get("power", {}) or {}
+        self.rails = {r["id"]: r for r in pw.get("rails", [])}
+        self.pev = {r: [] for r in self.rails}          # rail -> [(t, dI, domain, 種類)]
+        if not self.rails:
+            return
+        for d in self.doms:
+            r = d.get("rail")
+            if not r:
+                self.info.append(f"[info] {self.dl(d['id'])}: 電源レール(rail)が未決")
+                continue
+            if r not in self.rails:
+                self.warn.append(f"[未定義] {self.dl(d['id'])}: rail {r} が power.rails にない")
+                continue
+            t = self.step.get(d["id"], 1) + .5
+            ps = d.get("power_switch")
+            if ps:
+                if not d.get("isolation"):
+                    self.warn.append(f"[電源順] {self.dl(d['id'])}: 電源スイッチがあるのに切り離し(isolation)がない。"
+                                     f"電源 ON → 切り離し解除 → クロック → リセット解除 の順に、電源が切れている間は出力を固定する")
+                ir = amp(ps.get("inrush") if isinstance(ps, dict) else None)
+                if ir:
+                    self.pev[r].append((round(t - .38, 3), ir, d, "突入"))
+            ld = amp(d.get("load"))
+            if ld is None:
+                self.info.append(f"[info] {self.dl(d['id'])}: 解除時の電流(load)が未決")
+                continue
+            n = int(d.get("stagger", 1) or 1)
+            for k in range(n):
+                self.pev[r].append((round(t + k * .5 / n, 3), ld / n, d, "解除"))
+        self.psum = {}
+        for r, ev in self.pev.items():
+            rail = self.rails[r]
+            tot = {}
+            for t, a, d, k in ev:
+                tot.setdefault(t, []).append((a, d, k))
+            self.psum[r] = tot
+            mx = amp(rail.get("max_step"))
+            dpa = mv_per_a(rail.get("droop"))
+            worst = max((sum(a for a, _, _ in v) for v in tot.values()), default=0)
+            for t, v in sorted(tot.items()):
+                a = sum(x for x, _, _ in v)
+                if mx and a > mx:
+                    who = "・".join(dict.fromkeys(f'{self.dl(d["id"])}({k})' for _, d, k in v))
+                    self.warn.append(f"[ドロップ] {rail.get('label', r)}: {who} が同時に動き ΔI≈{fa(a)} > 許容 {fa(mx)}。"
+                                     f"stagger(段階解除)か after で解除をずらす")
+            if not mx:
+                self.info.append(f"[info] {rail.get('label', r)}: 許容できる電流の跳ね上がり(max_step)が未決")
+            v0 = volt(rail.get("volt"))
+            for x in self.srcs:                           # 電圧低下リセットとのループ
+                if x.get("kind") != "bod" or x.get("rail") != r:
+                    continue
+                th = volt(x.get("threshold"))
+                if not (v0 and th and dpa):
+                    self.info.append(f"[info] {x.get('label', x['id'])}: しきい値・レール電圧・droop(mV/A)がそろわず、ループを確認できない")
+                    continue
+                low = v0 - worst * dpa
+                margin = low - th - (volt(x.get("hyst")) or 0)
+                rail["_bod"] = (x, th, low, margin)
+                if margin < 0:
+                    self.warn.append(f"[ドロップ] {rail.get('label', r)}: 解除時の電圧 ≈{low * 1000:.0f}mV が {x.get('label', x['id'])} の"
+                                     f"しきい値 {th * 1000:.0f}mV を下回る。解除 → 電圧低下 → リセット → 解除 のループになる")
 
     def ctl_label(self):
         if self.ctl.get("always_on"):
@@ -367,7 +451,7 @@ class ResetTree:
         for d in doms:
             crow[d["id"]] = chips(mem[d["id"]], W_DOM - 24)
             k = len([x for x in d.get("sources", []) if x in self.sid])
-            h = max(40 + max(1, len(crow[d["id"]])) * 24, k * 14 + 30, 78)
+            h = max(40 + max(1, len(crow[d["id"]])) * 24 + (16 if d.get("rail") or d.get("load") else 0), k * 14 + 30, 78)
             pos[d["id"]] = (y, h)
             y += h + 14
         ctl_bot = y
@@ -403,7 +487,10 @@ class ResetTree:
                 rl.append((("ok" if ok else "ng") if j == 0 else "c", t))
         plines += [("s", "この図の RDC")] + (rl or [("p", "なし")])
         PH = 24 + len(plines) * 17 + 10
-        H = WV_Y + 40 + max(len(wav_rows) * 30, PH) + 60
+        rails = [r for r in getattr(self, "rails", {}) if self.pev.get(r)]
+        RH = 96
+        CH_Y = WV_Y + 40 + len(wav_rows) * 30 + 40          # 電流の段階図
+        H = max(WV_Y + 40 + max(len(wav_rows) * 30, PH) + 60, CH_Y + (len(rails) * RH + 50 if rails else 0) + 40)
         W = max(W, 980, PX + PW + 20)
 
         o.append(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {f(W)} {f(H)}" font-family="\'Noto Sans JP\',sans-serif">'
@@ -540,6 +627,17 @@ class ResetTree:
                              f'<text x="{f(cx_ + w / 2)}" y="{f(cy_ + 13.5)}" font-size="10.5" fill="{INK}" text-anchor="middle">{esc(m)}</text>')
             if not mem[d["id"]]:
                 o.append(f'<text x="{f(X_DOM + 12)}" y="{f(y0 + 44)}" font-size="11" fill="#94a3b8">所属ブロックなし</text>')
+            if d.get("rail") or d.get("load"):
+                rl = getattr(self, "rails", {}).get(d.get("rail"), {})
+                bits = [f'電源 {rl.get("label", d.get("rail", "未決"))}']
+                if d.get("load"):
+                    bits.append(f'ΔI≈{d["load"]}')
+                if int(d.get("stagger", 1) or 1) > 1:
+                    bits.append(f'段階解除×{d["stagger"]}')
+                if d.get("power_switch"):
+                    bits.append("電源スイッチ")
+                o.append(f'<text x="{f(X_DOM + 12)}" y="{f(y0 + h - 8)}" font-size="10.5" font-weight="700" fill="#a16207">'
+                         f'⚡ {esc("・".join(bits))}</text>')
         # RDC
         for k, r in enumerate(rdc):
             lx = xr + 26 + k * 40
@@ -592,6 +690,61 @@ class ResetTree:
             xt = X0 + t * SW_
             p = f"M{f(X0)},{f(lo)} L{f(xt)},{f(lo)} L{f(xt)},{f(hi)} L{f(X0 + (nst + 1) * SW_)},{f(hi)}"
             o.append(f'<path d="{p}" fill="none" stroke="{col}" stroke-width="2"/>')
+            if kd == "dom":
+                n = int(it.get("stagger", 1) or 1)
+                for k in range(1, n):                  # 段階解除: 後続の小さな立ち上がり
+                    xk = xt + k * .5 / n * SW_
+                    o.append(f'<line x1="{f(xk)}" y1="{f(hi)}" x2="{f(xk)}" y2="{f(hi + 8)}" stroke="{col}" stroke-width="1.6"/>')
+                if n > 1:
+                    o.append(f'<text x="{f(xt + .5 * SW_ + 4)}" y="{f(lo)}" font-size="9.5" fill="{col}">段階×{n}</text>')
+                if it.get("power_switch"):
+                    o.append(f'<text x="{f(xt - 6)}" y="{f(lo - 2)}" font-size="9" fill="#a16207" text-anchor="end">電源ON→切離し解除→クロック→</text>')
+        if rails:
+            o.append(f'<text x="12" y="{f(CH_Y)}" font-size="14" font-weight="800" fill="{INK}">電源レールごとの電流の跳ね上がり(解除・クロック開始・突入)</text>')
+            for i, r in enumerate(rails):
+                rail = self.rails[r]
+                base = CH_Y + 22 + i * RH + RH - 18
+                mx = amp(rail.get("max_step"))
+                tot = self.psum[r]
+                top = max([mx or 0] + [sum(a for a, _, _ in v) for v in tot.values()]) * 1.18 or 1
+                sc = (RH - 34) / top
+                o.append(f'<text x="{LX}" y="{f(base - 34)}" font-size="11.5" font-weight="800" fill="{INK}">{esc(rail.get("label", r))}</text>'
+                         f'<text x="{LX}" y="{f(base - 19)}" font-size="10" fill="{GRAY}">{esc(str(rail.get("volt", "")))}'
+                         f'{" ・ " + esc(str(rail.get("droop"))) if rail.get("droop") else ""}</text>')
+                o.append(f'<line x1="{f(X0)}" y1="{f(base)}" x2="{f(X0 + (nst + 1) * SW_)}" y2="{f(base)}" stroke="#94a3b8"/>')
+                if mx:
+                    ym = base - mx * sc
+                    o.append(f'<line x1="{f(X0)}" y1="{f(ym)}" x2="{f(X0 + (nst + 1) * SW_)}" y2="{f(ym)}" stroke="{RDC_C}" '
+                             f'stroke-dasharray="5 3" stroke-width="1.2"/><text x="{f(X0 + (nst + 1) * SW_ + 6)}" y="{f(ym + 4)}" '
+                             f'font-size="10" fill="{RDC_C}">許容 {fa(mx)}</text>')
+                lastx = -1e9
+                for t, v in sorted(tot.items()):
+                    x = X0 + t * SW_
+                    yb = base
+                    a_sum = sum(a for a, _, _ in v)
+                    over = mx and a_sum > mx
+                    for a, d, k in v:
+                        hgt = a * sc
+                        o.append(f'<rect x="{f(x - 5)}" y="{f(yb - hgt)}" width="10" height="{f(hgt)}" fill="{d["_col"]}" '
+                                 f'fill-opacity="{".45" if k == "突入" else ".85"}" stroke="{RDC_C if over else "#fff"}" stroke-width="{1.4 if over else .6}"/>')
+                        yb -= hgt
+                    if over or x - lastx > 44:              # 段階解除で近い棒は数字を間引く(合計は表に出る)
+                        o.append(f'<text x="{f(x)}" y="{f(yb - 3)}" font-size="9.5" font-weight="{800 if over else 400}" '
+                                 f'fill="{RDC_C if over else INK}" text-anchor="middle">{fa(a_sum)}</text>')
+                        lastx = x
+                dpa = mv_per_a(rail.get("droop"))
+                worst = max(sum(a for a, _, _ in v) for v in tot.values())
+                if dpa:
+                    o.append(f'<text x="{f(X0 + (nst + 1) * SW_ + 6)}" y="{f(base - 18)}" font-size="10" fill="{INK}">'
+                             f'最大 ΔI {fa(worst)} → 電圧降下 ≈{worst * dpa * 1000:.0f}mV</text>')
+                bod = rail.get("_bod")
+                if bod:
+                    x_, th, low, margin = bod
+                    colb = RDC_C if margin < 0 else OK_C
+                    o.append(f'<text x="{f(X0 + (nst + 1) * SW_ + 6)}" y="{f(base - 4)}" font-size="10" fill="{colb}">'
+                             f'最悪 ≈{low * 1000:.0f}mV / {esc(x_.get("label", x_["id"]))} {th * 1000:.0f}mV(余裕 {margin * 1000:.0f}mV)</text>')
+            o.append(f'<text x="{LX}" y="{f(CH_Y + 22 + len(rails) * RH + 14)}" font-size="10.5" fill="{GRAY}">棒 = その段で増える電流(ドメインの色、薄い = 電源スイッチの突入)。'
+                     f'同じ段の合計が赤破線(許容)を超えると電圧が落ちる。stagger で段階解除、after で段をずらす</text>')
         o.append(f'<text x="12" y="{f(H - 14)}" font-size="11" fill="{GRAY}">OR = どれかのリセット源が入るとリセット / 非同期でリセットに入り、'
                  f'解除はドメインのクロックに同期 / 赤破線 = 片側だけ単独リセットされる乗り換え(RDC)・緑 = 切り離しあり / 破線の源 = チップ外 / '
                  f'波形は L = リセット中</text><text x="12" y="{f(H - 30)}" font-size="11" fill="{GRAY}">源の札: 非同期 = クロックと無関係に入る / '
@@ -612,6 +765,19 @@ class ResetTree:
             typ, ck, frm = self.src_info(x)
             L.append(f'| {x.get("label", x["id"])} | {KIND.get(x.get("kind"), x.get("kind", ""))} | '
                      f'{"非同期" if typ == "async" else "同期"} | {ck[0] if ck else ("—" if typ == "async" else "未決")} | {frm or ""} |')
+        if getattr(self, "rails", None):
+            L += ["", "## 電源レールと解除時の電流", "", "| レール | 段 | ΔI 合計 | 内訳 | 許容 |", "|---|---|---|---|---|"]
+            for r, tot in self.psum.items():
+                rail = self.rails[r]
+                for t, v in sorted(tot.items()):
+                    a = sum(x for x, _, _ in v)
+                    mx = amp(rail.get("max_step"))
+                    d0 = v[0][1]
+                    st = self.step.get(d0["id"], 1)
+                    lab = f'{self.rank.get(d0["id"], 1)}番目' + ("の直前" if t < st + .5 - 1e-6 else ("" if abs(t - st - .5) < 1e-6 else "の後(段階)"))
+                    L.append(f'| {rail.get("label", r)} | {lab} | {fa(a)} | '
+                             + ", ".join(f'{self.dl(d["id"])}({k} {fa(x)})' for x, d, k in v)
+                             + f' | {fa(mx) if mx else "未決"}{" **超過**" if mx and a > mx else ""} |')
         L += ["", "## 解除の順番", ""]
         for d in sorted(self.doms, key=lambda d: self.step.get(d["id"], 1)):
             pre = [self.dl(a) for a in d.get("after", [])] + [self.plls.get(p, {}).get("label", p) + " ロック" for p in d.get("wait", [])]

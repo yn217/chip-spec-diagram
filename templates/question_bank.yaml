@@ -404,6 +404,18 @@ items:
     priority: 36
     modes: [concept, rtl, mixed]
     depends_on: [reset_domains]
+  - id: reset_power
+    category: リセット系統
+    q: 解除時の電源ドロップを確認しますか？確認するなら、各ドメインの電源レール、解除・クロック開始で増える電流(ΔI)、レールが許せる電流の増え方と電圧降下(mV/A)、BOD のしきい値は？段階解除や電源スイッチ(突入電流)はありますか？
+    free: true
+    options:
+      - {label: 確認する, description: 値を入力(未決は仮置き)}
+      - {label: 今回は確認しない, description: "power: を書かない"}
+    effect: リセット系統図の下の電流の段階図、[ドロップ] [電源順] のチェック
+    assume: 今回は確認しない
+    priority: 30
+    modes: [concept, rtl, mixed]
+    depends_on: [reset_domains]
   - id: bandwidth
     category: 帯域
     q: 外部IF・主要経路の帯域(規格・レーン数・メモリ幅)は？
