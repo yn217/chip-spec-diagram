@@ -1,0 +1,56 @@
+# 製品規模を想定した動作確認用サンプル(構造は例): 階層 3段・繰り返し(×4, ×2)・名前付き接続・AXI+APB(ブリッジ)
+chip: {label: SoC (サンプル)}
+clocks:
+  domains:
+    - {id: cpu, label: cpu, freq: 2GHz}
+    - {id: sys, label: sys, freq: 1GHz}
+    - {id: npu, label: npu, freq: 1.2GHz}
+    - {id: per, label: per, freq: 100MHz}
+external:
+  - {id: dram, label: LPDDR5, kind: memory, ports: [{id: p}]}
+  - {id: host, label: Host PC, ports: [{id: p}]}
+pads:
+  - {id: pad_ddr, label: LPDDR5 x32, side: S, bw: 25.6GB/s}
+  - {id: pad_usb, label: USB3, side: W, bw: 625MB/s}
+  - {id: pad_uart, label: UART, side: E, external: none}
+buses:
+  - {id: axi, label: AXI Main, width: 256, clock_domain: sys,
+     attach: [cpu.ace, npu.m, npu.s, dma.m, dma.s, usb.m, usb.s, sram.s, ddrc.s, apbbr.s]}
+  - {id: apb, label: APB, width: 32, clock_domain: per, attach: [apbbr.m, uart.s, timer.s, gpio.s, i2c.s]}
+blocks:
+  - id: cpu
+    label: CPU Cluster
+    clock_domain: cpu
+    ports: [{id: ace, role: M, width: 128}]
+    children:
+      - id: core
+        label: Core
+        count: 4
+        children:
+          - {id: pipe, label: Pipeline}
+          - {id: l1i, label: L1I, sub: 64KB, kind: memory, ports: [{id: o}]}
+          - {id: l1d, label: L1D, sub: 64KB, kind: memory, ports: [{id: o}]}
+      - {id: l2, label: L2, sub: 2MB, kind: memory, ports: [{id: i}, {id: d}, {id: m}]}
+      - {id: scu, label: Coherency, ports: [{id: s}]}
+  - {id: npu, label: NPU, clock_domain: npu, ports: [{id: m, role: M}, {id: s, role: S}]}
+  - {id: dma, label: DMA, clock_domain: sys, ports: [{id: m, role: M}, {id: s, role: S}]}
+  - {id: usb, label: USB3 Ctrl, clock_domain: sys, ports: [{id: m, role: M}, {id: s, role: S}, {id: phy, dir: inout}]}
+  - {id: sram, label: Shared SRAM, sub: 4MB, kind: memory, clock_domain: sys, ports: [{id: s, role: S}]}
+  - {id: ddrc, label: DDR Ctrl, clock_domain: sys, ports: [{id: s, role: S}, {id: phy, dir: inout}]}
+  - id: apbbr
+    label: AXI2APB
+    ports: [{id: s, role: S, clock_domain: sys}, {id: m, role: M, width: 32, clock_domain: per}]
+  - {id: uart, label: UART, clock_domain: per, ports: [{id: s, role: S}, {id: tx, dir: inout}]}
+  - {id: timer, label: Timer, clock_domain: per, count: 2, ports: [{id: s, role: S}]}
+  - {id: gpio, label: GPIO, clock_domain: per, ports: [{id: s, role: S}]}
+  - {id: i2c, label: I2C, clock_domain: per, ports: [{id: s, role: S}]}
+links:
+  - {from: pad_ddr, to: ddrc.phy}
+  - {from: pad_ddr, to: dram.p}
+  - {from: pad_usb, to: usb.phy}
+  - {from: pad_usb, to: host.p}
+  - {from: uart.tx, to: pad_uart}
+  - {from: l1i.o, to: l2.i, level: 1, label: I-bus, width: 128, clock: 2GHz}
+  - {from: l1d.o, to: l2.d, level: 1, label: D-bus, width: 256, clock: 2GHz}
+  - {from: l2.m, to: scu.s, level: 1}
+  - {from: scu.s, to: cpu.ace, level: 1, dir: none}

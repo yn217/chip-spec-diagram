@@ -1,0 +1,13 @@
+# ボード配置(仮置き中心)。nets の pad は論理図のパッドID、fp はフロアプランのブロックID。
+board:
+  title: NPU-SoC PCIeカード 案A
+  preset: pcie_lp                 # 外形・エッジ端子・ブラケットは規格の代表値(仮)
+  chip: {id: soc, label: NPU-SoC, size: [17, 17], rot: 0}   # 位置未定 → 仮置き
+  parts:
+    - {id: sfp, kind: connector, label: SFP+, at: [12, 48], size: [14, 10]}
+    - {id: dram0, kind: memory, label: LPDDR5, at: [128, 38], size: [12.4, 15]}
+    - {id: usb, kind: connector, label: USB-C(デバッグ), at: [150, 60], size: [9, 4], status: decided}
+  nets:
+    - {pad: pad_pcie, to: edge, fp: pcie_phy, bw: 8GB/s}
+    - {pad: pad_eth, to: sfp, fp: eth_serdes, bw: 1.25GB/s}
+    - {pad: pad_ddr, to: dram0, fp: ddr_phy, bw: 25.6GB/s}

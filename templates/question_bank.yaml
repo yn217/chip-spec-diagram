@@ -1,0 +1,493 @@
+# 質問バンク: decisions.py init でモード別に取り込まれる。
+#  modes      : concept(構想・RTLなし) / rtl(RTLあり) / mixed(一部RTLあり)
+#  depends_on : "id"(決定済みかつ なし/不要/未定 以外) / "id=値"(値を含む)
+#  assume     : ユーザが「任せる」と答えた時の仮決め値(status=assumed, 図では「仮」表示)
+#  effect     : この決定が図のどこに効くか(質問の理由としてユーザに示す)
+#  options は AskUserQuestion の制約で最大4個。ユーザは常に自由記述もできる。
+items:
+  # ---- 目的 ----
+  - id: purpose
+    category: 目的
+    q: この図で何を説明しますか？
+    multi: true
+    options:
+      - {label: 構造の全体像, description: ブロック・バス・IOの構成図}
+      - {label: データフロー, description: 処理の流れを時系列のステップ図で}
+      - {label: 電源/クロック, description: ドメインを色で重ねた図}
+      - {label: 内部の詳細, description: 特定ブロックの詳細図(階層)}
+    effect: 作る図の種類(構造/ステップ/グループ/詳細)
+    assume: 構造の全体像, データフロー
+    priority: 10
+    modes: [concept, rtl, mixed]
+  - id: audience
+    category: 読者
+    q: 図の主な読者は誰ですか？
+    options:
+      - {label: 設計者, description: 信号名・ポート名まで出してよい}
+      - {label: 検証/SW, description: マスタ・アドレス・動作順を重視}
+      - {label: 顧客/社外, description: 内部名を出さず機能名で}
+      - {label: 企画/管理, description: ブロックは粗く、IOと性能を強調}
+    effect: ラベルの粒度(インスタンス名か機能名か)、ポート名の表示
+    assume: 設計者
+    priority: 12
+    modes: [concept, rtl, mixed]
+  - id: scope
+    category: 範囲
+    q: 図の範囲はどこまでですか？
+    options:
+      - {label: チップ全体, description: トップ階層をチップ境界・IO込みで}
+      - {label: サブシステム, description: 特定ブロック以下だけを描く}
+    effect: チップ境界とパッドを描くか、サブシステム境界で切るか
+    assume: チップ全体
+    priority: 14
+    modes: [concept, rtl, mixed]
+  - id: chip_name
+    category: 名称
+    q: チップ(またはサブシステム)の名前は？
+    free: true
+    effect: 図のタイトル・チップ枠のラベル
+    assume: (仮称) SoC
+    priority: 16
+    modes: [concept]
+
+  # ---- RTL ----
+  - id: rtl_paths
+    category: RTL
+    q: RTLの場所(ディレクトリ/ファイルリスト)を教えてください
+    free: true
+    effect: 解析対象
+    priority: 5
+    modes: [rtl, mixed]
+  - id: top_module
+    category: トップ
+    q: 図のトップにするモジュールはどれですか？
+    free: true
+    effect: 図の最上位(チップ枠)になるモジュール
+    priority: 18
+    modes: [rtl, mixed]
+    depends_on: [rtl_paths]
+  - id: expand
+    category: 詳細化
+    q: 中身まで描く(詳細図を作る)インスタンスはどれですか？
+    free: true
+    multi: true
+    effect: children として内部ブロックを展開し、詳細図を生成
+    assume: なし
+    priority: 40
+    modes: [rtl, mixed]
+    depends_on: [top_module]
+  - id: exclude
+    category: 除外
+    q: 図から外すインスタンス・信号はありますか？(デバッグ、テスト、クロック生成など)
+    free: true
+    options:
+      - {label: なし, description: すべて描く}
+      - {label: デバッグ/テスト系, description: dbg/test/scan/bist を除外}
+    effect: --exclude-inst の正規表現
+    assume: デバッグ/テスト系
+    priority: 42
+    modes: [rtl, mixed]
+    depends_on: [top_module]
+
+  # ---- IO ----
+  - id: ext_if
+    category: 外部IF
+    q: チップの外部インタフェースは何がありますか？
+    multi: true
+    options:
+      - {label: PCIe, description: ホスト接続}
+      - {label: Ethernet, description: ネットワーク}
+      - {label: MIPI/カメラ, description: センサ入力}
+      - {label: USB, description: 汎用}
+    effect: パッドとチップ外要素(Host/Network/Camera)
+    priority: 20
+    modes: [concept, mixed]
+  - id: ext_mem
+    category: 外部メモリ
+    q: 外付けメモリは？
+    options:
+      - {label: なし, description: オンチップのみ}
+      - {label: LPDDR4/5, description: モバイル/エッジ向け}
+      - {label: DDR4/5, description: 汎用}
+      - {label: HBM, description: 高帯域}
+    effect: DDRパッド・DDRコントローラ・チップ外DRAM
+    assume: LPDDR4/5
+    priority: 22
+    modes: [concept, mixed]
+  - id: ext_sources
+    category: データ入口
+    q: 各外部IFのデータはチップ外のどこから来て、どこへ出ますか？(例 USB=ホストPC、Ethernet=スイッチ/カメラ、PCIe=ホストCPU)
+    free: true
+    options:
+      - {label: 仮置きで進める, description: 一般的な接続先を「仮」で描く}
+    effect: チップ外要素(external)とデータの向き → データフローの起点/終点
+    assume: 仮置きで進める
+    priority: 21
+    modes: [concept, rtl, mixed]
+  - id: board_type
+    category: ボード
+    q: チップを載せるボードの形態は？(コネクタ位置がIOの辺を決めます)
+    options:
+      - {label: PCIeカード, description: エッジ端子=下辺、ブラケット側にネットワーク等}
+      - {label: M.2, description: 端子=短辺の一方}
+      - {label: 独自ボード, description: 外形とコネクタ位置を指定}
+      - {label: 未定, description: IOの辺は仮置き}
+    effect: board.py のプリセット → チップIOの推奨辺
+    assume: 未定
+    priority: 23
+    modes: [concept, rtl, mixed]
+  - id: board_parts
+    category: ボード部品
+    q: ボード上のコネクタ・DRAMの位置は決まっていますか？
+    free: true
+    options:
+      - {label: 仮置きで進める, description: 典型配置で置き「仮」と表示}
+    effect: ボード図の部品位置 → IOの辺の突き合わせ
+    assume: 仮置きで進める
+    priority: 25
+    modes: [concept, rtl, mixed]
+    depends_on: [board_type]
+  - id: io_sides
+    category: IOの辺
+    q: 各外部IFはチップのどの辺から入りますか？
+    options:
+      - {label: ボードから決める, description: board.py の推奨辺を使う}
+      - {label: 標準配置で, description: ホスト系=左、ネットワーク系=右、メモリ=下、制御系=上}
+      - {label: フロアプランに合わせる, description: 辺を個別に指定する}
+    effect: パッドの辺 → データがどの方向から入るかの表現
+    assume: ボードから決める
+    priority: 27
+    modes: [concept, rtl, mixed]
+
+  # ---- メモリ ----
+  - id: onchip_mem
+    category: 内蔵メモリ
+    q: オンチップメモリの構成は？
+    multi: true
+    options:
+      - {label: 共有SRAM, description: バスにつながる共有メモリ}
+      - {label: 演算器ローカル, description: 演算器内のバッファ}
+      - {label: キャッシュ, description: CPUキャッシュ等}
+      - {label: なし, description: ""}
+    effect: メモリブロック(専用記号)の数と位置
+    assume: 共有SRAM, 演算器ローカル
+    priority: 26
+    modes: [concept, mixed]
+  - id: sram_location
+    category: SRAM位置
+    q: 各SRAMは誰が使い、どこにつながりますか？(データフローの経路が変わります)
+    free: true
+    options:
+      - {label: バス共有, description: 全マスタからバス経由でアクセス}
+      - {label: 演算器ローカル, description: 演算器の中/専用ポートで直結}
+      - {label: CPU専用(TCM), description: ""}
+      - {label: 仮置きで進める, description: 共有+ローカルの典型構成で「仮」}
+    effect: メモリブロックの位置(バス上 / 演算器の中) と ステップの経路
+    assume: 仮置きで進める
+    priority: 27
+    modes: [concept, rtl, mixed]
+  - id: onchip_mem_size
+    category: 容量
+    q: オンチップメモリの容量は決まっていますか？
+    free: true
+    options:
+      - {label: 未定(TBD), description: 図には「容量TBD」と表示}
+    effect: メモリブロックの補足表示
+    assume: 未定(TBD)
+    priority: 50
+    modes: [concept, mixed]
+    depends_on: [onchip_mem]
+
+  # ---- バス ----
+  - id: bus_type
+    category: バス
+    q: メインのバス/インターコネクトは？
+    options:
+      - {label: AXI, description: クロスバー/インターコネクト}
+      - {label: NoC, description: ネットワークオンチップ}
+      - {label: AHB+APB, description: 小規模向け}
+      - {label: 未定, description: 図ではTBDとして描く}
+    effect: バス要素のラベル・M/Sの付け方
+    assume: AXI
+    priority: 28
+    modes: [concept, mixed]
+  - id: bus_hierarchy
+    category: バス構成
+    q: バスは何本ありますか？(主バス・サブバス、AXI/AHB/APB、ブリッジ・非同期の場所)
+    free: true
+    options:
+      - {label: 1本, description: 主バスのみ}
+      - {label: 主+周辺, description: 例 AXI + APB(ブリッジ経由)}
+      - {label: 複数の主バス, description: 例 AXI を2つ以上、カスケード}
+      - {label: 仮置きで進める, description: ""}
+    effect: バスの段・ブリッジ・共有/クロスバーの描き分け
+    assume: 仮置きで進める
+    priority: 29
+    modes: [concept, mixed]
+  - id: cpu_groups
+    category: バス構成
+    q: CPU(クラスタ)は何グループありますか？それぞれが管理するマクロは？(例 A53=アプリ/表示/ネット、M7=モータ/CAN、DSP=オーディオ)
+    free: true
+    options:
+      - {label: CPU 1グループ, description: 全マクロを1つの CPU が管理}
+      - {label: 複数グループ, description: グループごとにバスを分ける(どの CPU からも全アドレスへ届くようにバス間を双方向に)}
+      - {label: 仮置きで進める, description: ""}
+    effect: バスの分け方(R34)・owner:・bus_links(R35)・到達性の検査
+    assume: 仮置きで進める
+    priority: 30
+    modes: [concept, mixed]
+  - id: bus_split
+    category: バス構成
+    q: バスはどう分けますか？(CPU グループごと / 用途ごと(映像・ネット・制御)/ 速度ごと(遅い周辺は APB))
+    multi: true
+    options:
+      - {label: CPU グループごと, description: 1グループの CPU が管理するマクロを同じバスに}
+      - {label: 用途ごと, description: 同時に動くものを別のバスに(帯域の取り合いを避ける)}
+      - {label: 遅い周辺は APB, description: UART/I2C/SPI/GPIO/タイマ等を AXI2APB の先に}
+      - {label: 仮置きで進める, description: ""}
+    effect: buses の構成・bus_links の窓・APB ブリッジ
+    assume: CPU グループごと, 遅い周辺は APB
+    priority: 31
+    modes: [concept, mixed]
+    depends_on: ["bus_hierarchy!=1本"]
+  - id: dram_ports
+    category: メモリ
+    q: DRAM コントローラのポートはいくつで、どのバス(CPU / GPU / NPU …)から直接つながりますか？
+    free: true
+    options:
+      - {label: 1ポート, description: 主バスの下に1つ}
+      - {label: 複数ポート, description: バスごとに専用ポート(図は右端の縦長の枠から横に接続)}
+      - {label: 仮置きで進める, description: ""}
+    effect: DRAM コントローラの端子・各バスの attach・レイテンシの経路(R41)
+    assume: 仮置きで進める
+    priority: 32
+    modes: [concept, rtl, mixed]
+  - id: latency
+    category: レイテンシ
+    q: アクセスのレイテンシ(サイクル数)の目安はありますか？(バスの調停・デコード、ブリッジ、CDC 同期段数、スレーブの応答。わからなければ既定値で仮置き)
+    free: true
+    options:
+      - {label: 値がある, description: IP の資料・RTL・見積もりから latency を書く}
+      - {label: 既定値で仮置き, description: "AXI 要求2/応答1、AHB 1/1、APB 2/0、ブリッジ 1〜2、CDC 2 段、スレーブ 読2/書1(受け側クロック)"}
+    effect: 動作図のサイクル数(R39)と内訳の表
+    assume: 既定値で仮置き
+    priority: 47
+    modes: [concept, rtl, mixed]
+    depends_on: ["scenario"]
+  - id: address_map
+    category: アドレス
+    q: アドレスマップの元になる資料はありますか？(仕様書の表、SystemRDL/IP-XACT、デバイスツリー、RTLのデコーダ)
+    free: true
+    options:
+      - {label: 資料あり, description: ファイルを指定}
+      - {label: 仮置きで進める, description: 範囲をTBDで描き、重なり検査だけ行う}
+      - {label: 不要, description: アドレスは書かない}
+    effect: インターコネクトのアドレス範囲表示、メモリマップ図・表
+    assume: 仮置きで進める
+    priority: 31
+    modes: [concept, rtl, mixed]
+  - id: repeated
+    category: 繰り返し
+    q: 同じ構造が複数あるブロックは？(例 コア×4、チャネル×8)。代表1つを描いて ×N にします
+    free: true
+    options:
+      - {label: なし, description: ""}
+      - {label: 仮置きで進める, description: ""}
+    effect: count と バス側の番号の範囲
+    assume: なし
+    priority: 33
+    modes: [concept, rtl, mixed]
+  - id: bus_width
+    category: バス幅
+    q: バスのデータ幅は？
+    options:
+      - {label: 64bit}
+      - {label: 128bit}
+      - {label: 256bit}
+      - {label: 512bit}
+    effect: バスのラベル
+    assume: TBD
+    priority: 52
+    modes: [concept, mixed]
+    depends_on: [bus_type]
+  - id: masters
+    category: マスタ
+    q: バスのマスタになるブロックは？
+    multi: true
+    options:
+      - {label: CPU}
+      - {label: DMA}
+      - {label: アクセラレータ, description: NPU/DSP/GPU 等}
+      - {label: 外部IF, description: PCIe/USB等がマスタになる}
+    effect: M/S の割当、ブロックの上下配置(マスタ=バスの上)
+    assume: CPU, DMA, アクセラレータ
+    priority: 30
+    modes: [concept, mixed]
+  - id: compute_unit
+    category: 演算器
+    q: 主な演算器(アクセラレータ)は？名前と構成を教えてください
+    free: true
+    options:
+      - {label: NPU, description: PE Array + ローカルバッファ}
+      - {label: DSP, description: ""}
+      - {label: なし, description: ""}
+    effect: 演算器ブロックとその内部(階層)
+    assume: NPU
+    priority: 32
+    modes: [concept, mixed]
+  - id: hier_detail
+    category: 詳細化
+    q: 内部まで描くブロックはどれですか？
+    multi: true
+    free: true
+    effect: children と詳細図
+    assume: 演算器のみ
+    priority: 44
+    modes: [concept, mixed]
+    depends_on: [compute_unit]
+
+  # ---- 性能 ----
+  - id: clocks
+    category: クロック
+    q: 主要ブロックとバスのクロック周波数は？(SDCがあれば読みます)
+    free: true
+    options:
+      - {label: SDCから読む, description: create_clock を解析}
+      - {label: 仮置きで進める, description: 目標値を「仮」で記入}
+    effect: ブロックのクロック表示、バス帯域の計算(幅×クロック)
+    assume: 仮置きで進める
+    priority: 38
+    modes: [concept, rtl, mixed]
+  - id: clock_tree
+    category: クロック系統
+    q: クロック源(水晶/外部REFCLK)・PLL・分周・ゲートの構成は？非同期の乗り換え(CDC)はどのモジュールの中で行いますか(クロスバー内 / 各ブロック内)？
+    free: true
+    options:
+      - {label: SDC/仕様書から読む, description: ファイルを指定}
+      - {label: 仮置きで進める, description: 周波数の違う接続をCDCとして描く}
+    effect: クロック系統図、アーキテクチャ図のCDC枠
+    assume: 仮置きで進める
+    priority: 38
+    modes: [concept, rtl, mixed]
+  - id: bandwidth
+    category: 帯域
+    q: 外部IF・主要経路の帯域(規格・レーン数・メモリ幅)は？
+    free: true
+    options:
+      - {label: 規格から計算, description: 例 PCIe Gen4 x4 / LPDDR5 x32 から算出}
+      - {label: 仮置きで進める, description: ""}
+    effect: パッド・結線の帯域表示
+    assume: 規格から計算
+    priority: 39
+    modes: [concept, rtl, mixed]
+
+  # ---- ドメイン ----
+  - id: domains
+    category: ドメイン
+    q: 電源/クロックドメインを図示しますか？
+    options:
+      - {label: 電源ドメイン, description: ""}
+      - {label: クロックドメイン, description: ""}
+      - {label: 両方, description: ""}
+      - {label: 不要, description: ""}
+    effect: 半透明の色レイヤ(グループ)
+    assume: 不要
+    priority: 46
+    modes: [concept, rtl, mixed]
+  - id: domain_def
+    category: ドメイン定義
+    q: ドメインの分け方を教えてください(UPF/SDC があればそこから読みます)
+    free: true
+    effect: グループ領域と色
+    priority: 54
+    modes: [concept, rtl, mixed]
+    depends_on: [domains]
+
+  # ---- シナリオ ----
+  - id: scenario
+    category: 動作
+    q: ステップ図で説明する動作(ユースケース)は？
+    free: true
+    options:
+      - {label: 推論/処理1回, description: 入力→演算→出力}
+      - {label: ブート, description: リセット解除から起動まで}
+      - {label: DMA転送, description: ""}
+      - {label: 不要, description: 構造図だけ}
+    effect: scenario.steps
+    priority: 34
+    modes: [concept, rtl, mixed]
+    depends_on: ["purpose=データフロー"]
+  - id: scenario_steps
+    category: ステップ
+    q: ステップの区切りとマスタはこれでよいですか？(Claudeが案を出して確認します)
+    free: true
+    effect: 各ステップの矢印と表(マスタ・説明)
+    priority: 36
+    modes: [concept, rtl, mixed]
+    depends_on: [scenario]
+
+  # ---- 物理配置(フロアプラン) ----
+  - id: floorplan
+    category: フロアプラン
+    q: 物理配置(フロアプラン)の図も作りますか？
+    options:
+      - {label: 作る, description: IPの実寸で配置検討図を作る}
+      - {label: 不要, description: 論理的なブロック図だけ}
+    effect: 実寸のフロアプラン図(floorplan.py)
+    assume: 不要
+    priority: 48
+    modes: [concept, rtl, mixed]
+  - id: lib_paths
+    category: ライブラリ
+    q: IPのサイズを調べるライブラリ(LEF / Liberty .lib / データシート)の場所は？
+    free: true
+    effect: マクロの実寸(LEFのSIZE、なければ.libのarea)
+    priority: 49
+    modes: [concept, rtl, mixed]
+    depends_on: ["floorplan=作る"]
+  - id: die_size
+    category: ダイサイズ
+    q: ダイサイズ(またはコア領域)の目標は？
+    free: true
+    options:
+      - {label: 未定, description: マクロ面積と使用率から見積もって提案}
+    effect: ダイ枠の寸法、使用率チェック
+    assume: 未定
+    priority: 51
+    modes: [concept, rtl, mixed]
+    depends_on: ["floorplan=作る"]
+  - id: fp_constraints
+    category: 配置制約
+    q: 配置の制約はありますか？(IOの辺、マクロを置く位置、近づけたいブロックなど)
+    free: true
+    effect: マクロの初期配置と place 指定
+    assume: なし
+    priority: 53
+    modes: [concept, rtl, mixed]
+    depends_on: ["floorplan=作る"]
+  - id: drawio_scale
+    category: 換算
+    q: draw.io などに実寸で描けない時の換算は？
+    options:
+      - {label: 1mm=1000px, description: 1px=1µm(細部まで見える)}
+      - {label: 1mm=100px, description: 1px=10µm(大きいダイ向け)}
+      - {label: 1mm=200px, description: 1px=5µm}
+    effect: draw.io出力の座標換算(図中に換算とスケールバーを明記)
+    assume: 1mm=1000px
+    priority: 58
+    modes: [concept, rtl, mixed]
+    depends_on: ["floorplan=作る"]
+
+  # ---- 出力 ----
+  - id: output
+    category: 出力
+    q: 仕様書にはどの形式で入れますか？
+    multi: true
+    options:
+      - {label: SVG/PNG, description: Word/PowerPoint/Confluenceに貼れる}
+      - {label: HTMLビューア, description: ステップ切替付きでレビュー用}
+      - {label: draw.io, description: レイヤ付きで編集可能(ステップ・グループ=レイヤ)}
+    effect: 出力ファイル(SVG/PNGは常に出す)
+    assume: SVG/PNG, HTMLビューア
+    priority: 60
+    modes: [concept, rtl, mixed]

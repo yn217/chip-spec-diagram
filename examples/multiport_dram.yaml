@@ -1,0 +1,89 @@
+# 複数の AXI から DRAM コントローラへ(3ポート)の例(構造は例)。
+# CPU / GPU / NPU のバスを上から並べ、右端に縦長の DRAM コントローラを置いて横に接続する。
+chip: {label: AI SoC (DRAM 3ポートの例)}
+meta:
+  note: 構造・数値は説明用の例。DRAM コントローラは複数のバスにスレーブとしてだけつながるので、自動で右端の縦長の枠になる。
+clocks:
+  domains:
+    - {id: cpu, label: cpu, freq: 2GHz}
+    - {id: cbus, label: cbus, freq: 1GHz}
+    - {id: gpu, label: gpu, freq: 800MHz}
+    - {id: nbus, label: nbus, freq: 1.2GHz}
+    - {id: ddr, label: ddr, freq: 1.6GHz, assumed: true}
+external:
+  - {id: dram, label: LPDDR5, sub: x64, kind: memory, ports: [{id: p}]}
+pads:
+  - {id: pad_ddr, label: LPDDR5 x64, side: E, bw: 51.2GB/s}
+latency:
+  accesses:
+    - {from: cpu, to: ddrc, op: read, title: "CPU → DRAM リード(ポート0)"}
+    - {from: gpu, to: ddrc, op: read, title: "GPU → DRAM リード(ポート1)"}
+    - {from: npu, to: ddrc, op: read, title: "NPU → DRAM リード(ポート2)"}
+buses:
+  - id: cbus
+    label: CPU AXI
+    width: 128
+    clock_domain: cbus
+    latency: {req: 2, resp: 1}
+    attach:
+      - l3.m
+      - {port: rom.s, addr: "0x0000_0000/256K"}
+      - {port: sram.s, addr: "0x0010_0000/2M"}
+      - {port: ddrc.p0, addr: "0x8000_0000-0xFFFF_FFFF"}
+  - id: gbus
+    label: GPU AXI
+    width: 256
+    clock_domain: gpu
+    latency: {req: 2, resp: 1}
+    attach:
+      - gpu.m
+      - {port: gpu.s, addr: "0x4000_0000/1M"}
+      - {port: ddrc.p1, addr: "0x8000_0000-0xFFFF_FFFF"}
+  - id: nbus
+    label: NPU AXI
+    width: 256
+    clock_domain: nbus
+    latency: {req: 2, resp: 1}
+    attach:
+      - npu.m
+      - {port: npu.s, addr: "0x5000_0000/1M"}
+      - {port: nsram.s, addr: "0x5800_0000/8M"}
+      - {port: ddrc.p2, addr: "0x8000_0000-0xFFFF_FFFF"}
+bus_links:   # 設定・共有メモリ用(DRAM へは各バスの専用ポートで行く)。GPU/NPU からは他を全て CPU AXI へ
+  - {between: [cbus, gbus], to_b: "0x4000_0000/1M", to_a: default}
+  - {between: [cbus, nbus], to_b: ["0x5000_0000/1M", "0x5800_0000/8M"], to_a: default}
+blocks:
+  - id: cpu
+    label: CPU Core
+    count: 4
+    cpu: true
+    clock_domain: cpu
+    attached:              # コアの枠の中に L1(I$ / D$ と容量)
+      - {id: l1i, label: I$, sub: 32KB, kind: memory, ports: [{id: m, role: M, width: 128}]}
+      - {id: l1d, label: D$, sub: 32KB, kind: memory, ports: [{id: m, role: M, width: 128}]}
+  - {id: l2, label: L2$, sub: 256KB, count: 4, kind: memory, clock_domain: cpu, latency: {req: 4, resp: 2},
+     ports: [{id: i, role: S}, {id: d, role: S}, {id: io, role: M, width: 128}, {id: do, role: M, width: 128}]}
+  - {id: l3, label: L3$, sub: 4MB, kind: memory, clock_domain: cpu, latency: {req: 10, resp: 4},
+     ports: [{id: i, role: S}, {id: d, role: S}, {id: m, role: M, width: 128}]}
+  - {id: rom, label: Boot ROM, kind: memory, sub: 256KB, clock_domain: cbus, ports: [{id: s, role: S}]}
+  - {id: sram, label: Shared SRAM, kind: memory, sub: 2MB, clock_domain: cbus, ports: [{id: s, role: S}]}
+  - {id: gpu, label: GPU, clock_domain: gpu, ports: [{id: m, role: M, width: 256}, {id: s, role: S, width: 32}]}
+  - {id: npu, label: NPU, sub: 16 TOPS, clock_domain: nbus, ports: [{id: m, role: M, width: 256}, {id: s, role: S, width: 32}]}
+  - {id: nsram, label: NPU SRAM, kind: memory, sub: 8MB, clock_domain: nbus, ports: [{id: s, role: S}]}
+  - id: ddrc
+    label: DRAM Ctrl
+    sub: 3 ports
+    clock_domain: ddr
+    latency: {read: 40, write: 12}
+    ports:
+      - {id: p0, role: S, width: 128}
+      - {id: p1, role: S, width: 256}
+      - {id: p2, role: S, width: 256}
+      - {id: phy, dir: inout}
+links:
+  - {from: l1i.m, to: l2.i, width: 128, clock: 2GHz}
+  - {from: l1d.m, to: l2.d, width: 128, clock: 2GHz}
+  - {from: l2.io, to: l3.i, width: 128, clock: 2GHz}
+  - {from: l2.do, to: l3.d, width: 128, clock: 2GHz}
+  - {from: ddrc.phy, to: pad_ddr}
+  - {from: pad_ddr, to: dram.p}

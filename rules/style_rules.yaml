@@ -1,0 +1,467 @@
+# 作図ルール台帳 — ユーザの指摘を一般化して蓄積する。図を出す前にすべて満たすこと。
+#  enforce : render=描画エンジンが自動で守る / lint=chipdiag lint が検査 / review=目視チェック(rules.py checklist) / question=決定事項で質問
+#  applies : architecture(論理/アーキ図) step(ステップ図) detail(詳細図) clock(クロック系統図) floorplan board all
+#  origin  : どの指摘から生まれたか(要約)
+rules:
+- id: R01
+  title: 階層を表現する
+  rule: ブロックは children で階層を持つ。トップ図では中身を箱だけ(または折りたたみ⊞)、内部結線と端子名は詳細図で出す。詳細図は同じ座標系のズーム。
+  why: フローチャート型の1階層図では構造が伝わらない
+  enforce:
+  - render
+  - review
+  applies:
+  - architecture
+  - detail
+  origin: 初回要望「階層表現ができない」
+- id: R02
+  title: 端子(I/O)と Master/Slave を描く
+  rule: バスに接続する端子は role M/S 必須。M=黒塗り、S=白抜き、IO=◇。
+  enforce:
+  - render
+  - lint
+  lint: バス接続ポートにM/S未指定
+  applies:
+  - architecture
+  - detail
+  origin: 初回要望「input/output、master/slave を表現しない」
+- id: R03
+  title: データの入口からメモリ・演算器までの経路を描く
+  rule: データフローは パッド→コントローラ→バス→メモリ/演算器 の順に端子を辿る。ショートカットしない。
+  enforce:
+  - lint
+  - review
+  lint: 未定義の経路点
+  applies:
+  - step
+  origin: 初回要望「メモリを表現しない、IOのどの方向から入るか」
+- id: R04
+  title: 図の中の文字は最小
+  rule: ラベル16字以内+補足1行。説明・マスタ名・条件は図の外の表へ。
+  enforce:
+  - lint
+  - review
+  lint: ラベルが長い
+  applies:
+  - all
+  origin: 初回要望「枠の中に文字を書きすぎる」
+- id: R05
+  title: 時系列はベース図を使い回して重ねる
+  rule: 1枚に①②③を全部載せない。1ステップ1コマ、過去はグレー、現在はカラー。座標はステップ間で動かさない。1ステップの矢印は3本まで。
+  enforce:
+  - render
+  - lint
+  lint: 矢印N本 → ステップ分割
+  applies:
+  - step
+  origin: 初回要望「図を使い回し矢印を上から重ねる」
+- id: R06
+  title: グループは半透明の色で上から重ねる
+  rule: 電源/クロック/機能の分類は枠線で囲まず半透明レイヤ。観点ごとに別の図。
+  enforce:
+  - render
+  applies:
+  - architecture
+  origin: 初回要望「透過で色付きで分類」
+- id: R07
+  title: クロック周波数と帯域を書く
+  rule: ブロックのクロック、バスの 幅/周波数/帯域、IOの帯域を記入。帯域は 幅×周波数 で計算。
+  enforce:
+  - render
+  - lint
+  lint: '[perf] 未記入'
+  applies:
+  - architecture
+  origin: 「アーキテクチャ図ではクロック周波数、帯域は書いて欲しい」
+- id: R08
+  title: SRAMの位置を明示する
+  rule: SRAMがバス共有か演算器ローカルかを図で区別し、利用ブロックの近くに置く。接続先不明は警告。
+  enforce:
+  - render
+  - lint
+  - question
+  lint: メモリの接続先が不明
+  applies:
+  - architecture
+  origin: 「SRAMがどこにあるかは重要、データフローに影響」
+- id: R09
+  title: チップ外のデータの出入り先を描く
+  rule: USB/Ethernet/PCIe等のIOは、チップ外の相手(ホストPC、スイッチ、カメラ、DRAM)と向き・帯域を描く。不明はTBD。
+  enforce:
+  - lint
+  - question
+  lint: チップ外の接続先が未定義
+  applies:
+  - architecture
+  - board
+  origin: 「USBやイーサがチップ外のどこから入るかも重要」
+- id: R10
+  title: ボードがIOの辺を決める・未決は仮置き
+  rule: ボードのコネクタ位置(PCIeカードならエッジ端子)からIOの辺を求め、論理図・フロアプランと突き合わせる。未決は「仮」で進める。
+  enforce:
+  - render
+  - review
+  - question
+  applies:
+  - board
+  - architecture
+  - floorplan
+  origin: 「チップ外のボードも気にする」「決まってないことが多いので仮置き」
+- id: R11
+  title: IPの大きさはライブラリで調べる
+  rule: フロアプランのマクロ寸法は LEF(SIZE)を優先。Libertyは面積のみ→仮。不明は質問。
+  enforce:
+  - render
+  - question
+  applies:
+  - floorplan
+  origin: 「IPはライブラリを調べて大きさを把握」
+- id: R12
+  title: 実寸で描けない出力は換算を明記
+  rule: draw.io等は 1mm=1000px 等の換算を決め、図中に換算とスケールバーを入れる。
+  enforce:
+  - render
+  applies:
+  - floorplan
+  origin: 「drawio形式など実寸表現できない場合、1mm=1000pxなど換算」
+- id: R13
+  title: 数値は囲み枠を作らず直接書く
+  rule: バスの幅/周波数/帯域はバスの枠の中に直接。接続線の数値も枠なし文字(白ふち)。
+  enforce:
+  - render
+  applies:
+  - architecture
+  origin: 「わざわざ枠を作るのではなく、バスの枠に直接書いて」
+- id: R14
+  title: クロスバー側にもポートを描き番号を振る
+  rule: クロスバー側のポートを M1/S1… で描く(相手の逆の役割)。RTLがあればRTLの番号に合わせる。
+  enforce:
+  - render
+  applies:
+  - architecture
+  origin: 「AXIクロスバー側にもマスター、スレーブポートを描く。M1、S1など」
+- id: R15
+  title: 周波数が変わる箇所に非同期(CDC)を示す
+  rule: 両端のクロックドメインが異なる接続にCDC枠。詳細はクロック系統図(源→PLL→分周/CG→ドメイン、CDC一覧)。
+  enforce:
+  - render
+  - lint
+  lint: '[cdc] 判定できない接続'
+  applies:
+  - architecture
+  - clock
+  origin: 「周波数が異なる箇所には非同期を示す枠」「詳しくはクロック系統図」
+- id: R16
+  title: 接続には矢印
+  rule: バス接続は M→クロスバー→S の向き、IOは双方向、結線は向きを持つ。
+  enforce:
+  - render
+  applies:
+  - architecture
+  - detail
+  origin: 「接続は矢印を入れて欲しい」
+- id: R17
+  title: 接続ごとにバス幅・周波数・帯域
+  rule: 各接続線の脇に 幅 @周波数 / 帯域(接続するブロック側)。幅がバスと違う接続は色を変える(幅変換)。
+  enforce:
+  - render
+  applies:
+  - architecture
+  origin: 「バス幅」「クロック周波数などもバスの所で知りたい」
+- id: R18
+  title: CDC・FIFO はモジュールの中に置く
+  rule: '配線の途中には置かない。バス接続はクロスバー内(既定)かブロック内(cdc_in: block)。結線は受け側(既定)か送り側。'
+  why: 実設計で中途半端な配線の途中にCDC用モジュールを置かない
+  enforce:
+  - render
+  - question
+  applies:
+  - architecture
+  - detail
+  origin: 「CDCの枠を入れる所はモジュールの中」「クロスバー内は恐らくクロスバー内」
+- id: R19
+  title: FIFOの場所を表現する
+  rule: '接続の fifo: 段数 でFIFO記号を所属モジュール内に描く。CDCと同じ場所なら AFIFO。FIFO自体のブロックは kind: fifo。'
+  enforce:
+  - render
+  applies:
+  - architecture
+  - detail
+  origin: 「FIFOの場所も表現出来るように」
+- id: R20
+  title: 機能だけを示す枠に端子を描かない
+  rule: 表示中の図で結線のない端子は描かない(機能ブロックの枠は端子なし)。
+  enforce:
+  - render
+  applies:
+  - architecture
+  - detail
+  origin: 「NPUの中で接続されてない機能だけを示す枠は端子不要」
+- id: R21
+  title: 複数個は斜めに重ねて表現
+  rule: 'count: N で枠を右上へ少しずつずらして重ね ×N を付ける。'
+  enforce:
+  - render
+  applies:
+  - architecture
+  - detail
+  - floorplan
+  origin: 「PE Arrayのように複数ある場合は枠を斜めにずらして」
+- id: R22
+  title: 詰める、ただし文字は重ねない
+  rule: 枠は文字に合わせた最小寸法、間隔は注記が入る最小限。文字の重なりは render 時に自動検出し、0件にしてから出す。
+  enforce:
+  - render
+  - lint
+  lint: '[重なり]'
+  applies:
+  - all
+  origin: 「実際のSoCは複雑で個数が多いので詰めたい。文字が重ならない範囲で」
+- id: R23
+  title: 結線はブロックを貫通しない
+  rule: 結線(詳細レベル含む)が端点以外のブロックを横切らないこと。自動配置は親につながる子と結線のある兄弟を隣に並べる。残れば order/place で直す。
+  enforce:
+  - render
+  - lint
+  lint: '[貫通]'
+  applies:
+  - architecture
+  - detail
+  origin: ハーネス自身の検査で発見(RTL由来の詳細図で ctrl→pe が ndma を横切った)
+- id: R24
+  title: 端子名は注記と重ならない位置に
+  rule: 最上位ブロックの端子名は枠の内側(外側はバス接続の注記)、子ブロックの端子名は外側。向かい合う端子名が入る間隔を自動で確保。
+  enforce:
+  - render
+  - lint
+  lint: '[重なり]'
+  applies:
+  - detail
+  origin: ハーネス自身の検査で発見(端子名と帯域注記・ラベルの重なり)
+- id: R25
+  title: 注記の向きは図に合わせて選ぶ
+  rule: 接続線の 幅/周波数/帯域 は縦書き(回転)に固定しない。縦・横、線の左右、ポート寄りなどの候補から、他の文字・記号・線・ブロックと重ならず線の長さに収まるものを自動で選ぶ。
+  enforce:
+  - render
+  - lint
+  lint: '[重なり]'
+  applies:
+  - architecture
+  - detail
+  origin: 「常に縦に回転させているが、重なるなら横書きでもいい。図に合わせて変えてよい」
+- id: R26
+  title: 複数バスは段に分け、種類で描き分ける
+  rule: バスごとに帯を分けて主バスから順に重ね、ブリッジは2本にまたがるブロックで描く。クロスバー型は番号付き M/S、共有型(AHB/APB)は細い帯で PSELn/HSELn。端子ごとにクロックを持たせ、ブリッジ内のCDCはブリッジの中に描く。
+  enforce:
+  - render
+  applies:
+  - architecture
+  origin: 「バスが複数あるとき(AXI複数、AHB、APB)はどう表現するか」
+- id: R27
+  title: 製品規模は階層ごとのページに分ける
+  rule: トップ図は1段下の中身まで。子を持つブロックはそれぞれ独立に配置した詳細ページを作り、境界の端子は枠の端子として外側の相手(バス名・番号、ブロック名)を書く。繰り返し構造は代表1つを描いて ×N、バス側の番号は範囲(S1-4)。1枚のブロックが多すぎれば警告する。
+  enforce:
+  - render
+  - lint
+  lint: '[規模]'
+  applies:
+  - all
+  origin: 「実際の製品くらいマクロが多い場合に使えるように(複数コア、キャッシュ等は例)」
+- id: R28
+  title: 線を重ねない
+  rule: 別々の接続の線が平行に重ならないよう自動でずらす(同じ端子を共有する線の合流は可)。残れば警告。
+  enforce:
+  - render
+  - lint
+  lint: '[線の重なり]'
+  applies:
+  - architecture
+  - detail
+  origin: ハーネス自身の検査(詳細ページで I-bus と D-bus が重なった)
+- id: R29
+  title: FIFOは長辺を接した長方形の列で描く
+  rule: FIFOは長辺を接した長方形4つ(データの流れる向きに並ぶ)で描き、名前と段数(例 FIFO 16段)を記号の上に重ねるか隣接して書く。FIFO専用の色(紫)を使う。記号の大きさは図に合わせて拡大縮小(ブロックは枠いっぱい、接続上は
+    style.fifo_scale)。CDCと同じ場所(非同期FIFO)なら FIFO記号の横に CDC を並べる(R30)。
+  enforce:
+  - render
+  - lint
+  lint: '[重なり]'
+  applies:
+  - architecture
+  - detail
+  origin: 「FIFO、長方形の長辺を引っ付けて4つ並べた図に。グループの上から/隣接部にFIFOと段数。色は他と変える。大きさは図で拡大縮小」
+- id: R30
+  title: CDCは自分の接続の位置から動かさない
+  rule: CDC記号は位置が意味を持つので、引き出し線で離れた所に置かない。他の記号と重なる時は自分の接続線の延長上(クロスバーの奥)へだけ動かし、それでも置けなければ警告して接続の間隔を空ける。非同期FIFOの箇所は
+    FIFO記号の横に CDC を並べる。
+  enforce:
+  - render
+  - lint
+  lint: '[CDC位置]'
+  applies:
+  - architecture
+  - detail
+  origin: 「非同期FIFOを置いている所はCDCマークは隣接横に並べるで良い」「CDCマークは位置が重要、線で繋げて遠くに置かない」
+- id: R31
+  title: FIFOは接続の上に置く
+  rule: FIFOはデータの通り道なので、接続線が入口から入り出口から先へ続くように描く(クロスバー内・ブロック内の FIFO も接点から線を延ばして記号を通す)。FIFOブロックは入口・出口の端子を流れの両端に置く。接続のない(宙に浮く)FIFOは、サブブロックを並べるだけの図に限る。
+  enforce:
+  - render
+  - lint
+  lint: '[info] 接続のないFIFO'
+  applies:
+  - architecture
+  - detail
+  origin: 「FIFOは接続意識して欲しい。宙に浮く、接続がないのは、サブブロックを並べる時とか」
+- id: R32
+  title: 多数ぶら下がる周辺は枠を接した表にする
+  rule: '1つのブリッジ/バスに周辺が多数ぶら下がる時は、個別の線で引かず、ブリッジのブロックに pack: true で周辺を枠を接した表として並べる(各セルに名前と先頭アドレス・サイズ)。'
+  enforce:
+  - render
+  applies:
+  - architecture
+  origin: 「バスアーキテクチャで大量にぶら下がる場合はマクロの枠を引っ付けるとかしないといけなくなるはず」
+- id: R33
+  title: インターコネクトにアドレス範囲を書きメモリマップと一致させる
+  rule: クロスバー/NoC のスレーブ側ポートの内側にデコードするアドレス範囲(先頭–末尾)を書く。同じ情報からメモリマップ図・表を作り、範囲の重なり・親範囲からのはみ出しを検査する。
+  enforce:
+  - render
+  - lint
+  lint: '[アドレス]'
+  applies:
+  - architecture
+  origin: 「メモリーマップ意識する為に、インターコネクト部分にアドレス範囲書く必要」
+- id: R34
+  title: バスはCPUグループ・用途で分ける
+  rule: '1本のバスに全部ぶら下げない(1つが通信中は他が待つ)。1つのCPUグループが管理するマクロは同じバス(またはその下の一方向ブリッジ先のバス)に置く。ブロックに owner: <CPU>、バスに owner:
+    を書き、別のバスにあれば警告。'
+  enforce:
+  - render
+  - lint
+  - question
+  lint: '[所属]'
+  applies:
+  - architecture
+  origin: 「1つのバスに全てぶら下げると、1つが通信している間は他が通信できなくなる」「1グループのCPUで管理するマクロを同じバスにぶら下げる」
+- id: R35
+  title: 分けたバスの間は双方向、どのCPUからも全アドレスへ
+  rule: 分けたバスどうしは bus_links で双方向につなぐ。専用のモジュールは作らず、バスとバスを縦に直接つなぐ線を2本(上→下、下→上)描き、両方のバスに端子番号(M/S)を付け、CDC は受け側のバスの中に置く。転送する窓(to_b
+    / to_a、default=他で当たらない全て)を書く。マスタのマクロごとに全てのスレーブ範囲に届くか・ループがないかを検査する(R43)。
+  enforce:
+  - render
+  - lint
+  lint: '[到達性]'
+  applies:
+  - architecture
+  - memmap
+  origin: 「複数に分けたバス間同士はマスター、スレーブどちらもあるはず」「どのCPUからも全てのメモリーマップにアクセス出来る必要がある」
+- id: R36
+  title: 遅い周辺はAPBにまとめる
+  rule: UART/I2C/SPI/GPIO/タイマ等の遅い周辺は、AXI2APB(または AHB2APB)ブリッジの先の APB に複数ぶら下げる。APB はスレーブ側に PSEL 番号を振り、アドレス範囲はブリッジの窓に収める。
+  enforce:
+  - render
+  - question
+  applies:
+  - architecture
+  origin: 「APBも追加して 遅いペリフェラルを複数ぶら下げる」
+- id: R37
+  title: バスグループの色を図どうしで揃える
+  rule: 'バスごとに色を決め(color: か自動)、バスの帯・所属ブロックの上辺の帯・メモリマップの左の帯と経由の文字を同じ色にする。凡例を付ける。'
+  enforce:
+  - render
+  applies:
+  - architecture
+  - memmap
+  origin: 「メモリーマップとバスアーキテクチャの色は一緒にしたい。紐付ける為」「バスグループごとに色分けなど、人にわかりやすいように」
+- id: R38
+  title: '間隔: 拡大はよいが無駄な空きも詰めすぎも避ける'
+  rule: ブロックが多い時は図を大きくしてよい。ただしバスの段ごとにまとまり(上の行のブリッジ・マスタと下の行の周辺)を同じ列にそろえ、空いた左側から詰める。文字が重なるほど詰めない(重なりは lint で 0 に)。
+  enforce:
+  - render
+  - lint
+  lint: '[重なり]'
+  applies:
+  - architecture
+  origin: 「拡大しないといけないのでも良い。無駄にスペースを空けるのでなければ」「詰めすぎて見にくくなるレベルに詰めるのは避ける」
+- id: R39
+  title: 動作図にはレイテンシの目安を書く
+  rule: CPU からのアクセスを説明する図では、経路(バス・ブリッジ・CDC・スレーブ)ごとのサイクル数を矢印の上に +N で書き、リードはデータが CPU に戻るまで(ライトは応答が戻るまで)の合計を CPU の所に書く。要求は実線、戻りは点線。内訳(各要素のクロック・CDC・ns)は表に出す。決まっていない値は既定値で仮置きし「仮」と表に出す。
+  enforce:
+  - render
+  - lint
+  - question
+  lint: '[レイテンシ]'
+  applies:
+  - scenario
+  origin: 「動作を説明する図の時は、レイテンシーの目安も書いて欲しい」「CPUからAXI、AHB、APBのバスに順番にアクセスの矢印をひいて、何サイクルかかるか、リードの場合はデータがCPUに戻るまで何サイクルかかるか」
+- id: R40
+  title: 共有バス(APB/AHB)の周辺は枠を接して並べる
+  rule: 'APB/AHB など共有バスにだけぶら下がるスレーブは、隣どうしの枠を接して1列に並べ(間隔0)、図を小さくする。下の段のまとまりは、上のブリッジの右端にそろえて左の空きへ広げ、次のバスのまとまりをすぐ右に置く。やめる時は
+    style.abut_shared: false / バスに abut: false。'
+  enforce:
+  - render
+  applies:
+  - architecture
+  origin: 「APBにぶら下がっているマクロの枠、隣と引っ付けるようにして、図の全体が小さくなるようにして」
+- id: R41
+  title: '複数のバスからDRAMへ: 右端に縦長のコントローラ'
+  rule: 1つのスレーブ(DRAM コントローラ等)に複数のバスから専用ポートでつながる時は、バスを上から1本ずつ積み、右端に縦長の枠を置いて各バスの端から横に接続する(下にぶら下げると線が長くなるため)。離れた段のバスどうしの直接接続は、間の行を右へずらして左端に通り道を空け、縦にそのまま通す(間のバスを横切らない)。メモリマップでは1行にまとめ、経由するバスを並べる。
+  enforce:
+  - render
+  applies:
+  - architecture
+  - memmap
+  origin: 「CPU/GPU/NPUがぶら下がっているバスそれぞれからDRAMコントローラーへの接続」「上からAXI1,2,3と並べたあと、右端に縦長のコントローラー枠を描いて、横方向にポート接続を描く」
+- id: R42
+  title: CPUのI$/D$はコアの枠の中、L2$→L3$を経てバスへ
+  rule: CPU コアの L1(I$・D$)はコアの枠の中(下側)に小枠で描き、中に I$ / D$ と容量を書く。I$・D$ からそれぞれ L2$(容量)へ線、L2$ から I/D それぞれの出力(2本)で次へ。複数コアは
+    L3$(容量)にまとまり、L3$ からバスへ。コア→L2$→L3$→バス を縦に積み、線の列(x)を上から下へそろえてまっすぐにする。段の数・線の本数は書いた結線どおり(L3 がなければ L2 からバス)。
+  enforce:
+  - render
+  applies:
+  - architecture
+  origin: 「CPUへIキャッシュ、Dキャッシュがあり、CPUの枠に引っ付けて枠をつけて欲しい」「そこからl2キャッシュへつながる、l2からAXIバスに繋がる」「I$、D$と枠の中に描く。キャッシュ容量も描く。l2キャッシュも容量かく」
+    「L1キャッシュはCPUの枠の中に入れる」「L2キャッシュからバスへは、i.D、それぞれ2本出力も出るはず」「複数コアでL3キャッシュ繋がり、そこからバスにつながる」
+- id: R43
+  title: マスタごとに全アドレスへ届くか・ループがないか
+  rule: 'リード/ライトを出すマスタのマクロ(バスにマスタ端子で出るブロック。CPU コアは L2 経由)ごとに、全てのスレーブ範囲へ届くかを検査する([到達性])。届かなくてよいマスタは access: で範囲を限る。バス間の窓どうしでアドレスが回り続ける所(どこにもデコードされない範囲を
+    default で送り合う等)を [ループ] として出す。マスタごとの到達性の表を memmap.md に出す。'
+  enforce:
+  - lint
+  lint: '[到達性] [ループ]'
+  applies:
+  - architecture
+  - memmap
+  origin: 「メモリーアドレスのチェックは、マスターとしてリード、ライト命令発行するマクロから、全てのメモリーアドレスにアクセス出来るか」「ループするような箇所がないか」「マスターとなるマクロごとに確認する」
+- id: R44
+  title: 多数のマクロ・複数バスでも詰めて、スクロールを減らす
+  rule: '同じバスにだけつながるブロックは行の中で枠を接して並べる(クロスバー/NoC も。横にパッドへ出る線があるものは空ける)。マスタ(設定用スレーブ端子があっても)はバスの上、スレーブだけのものは下に置き、上下の行の幅をそろえる。pack
+    の表は既定で 3 行以内の列数。下の段のバスのまとまりは、上のブリッジの右端にそろえて左の空きへ広げる。文字の重なりは lint で 0 に。やめる時は style.abut: false / バスに abut: false。'
+  enforce:
+  - render
+  - lint
+  lint: '[重なり]'
+  applies:
+  - architecture
+  origin: 「多くのマクロと、バスが複数ある時にも対応出来るようにする」「枠同士を引っ付けたり、隙間を詰めたりして、全体の閲覧性、スクロールを沢山しなくてもいいようにする」
+- id: R45
+  title: マクロの枠の横幅は中身が入る最小に
+  rule: ブロックの横幅は、名前・補足(容量等)・下辺のクロックと ×N・バス側の端子番号(PSEL12-14 等)・端子の間隔が入る最小にする(固定の最小幅で広げない)。コアの中の I$/D$ は名前と容量が入る大きさ。注記の配置ではバス側の端子番号も避ける。
+  enforce:
+  - render
+  - lint
+  lint: '[重なり]'
+  applies:
+  - architecture
+  origin: 「マクロの枠の横幅も詰められるところは詰めたい」「L1キャッシュの枠が大きいのは気になった」
+- id: R46
+  title: '接続図: 中心ブロックと接続元・接続先、端子は枠内に札で'
+  rule: ブロック間の接続図は、中心に示したいブロック、左に接続元・右に接続先を置く。各枠の上側にモジュール名とインスタンス名。入出力の端子は枠の中に並べ、枠の辺の上に矢印形の札(入力=内へ・出力=外へ・双方向=両端・束は塗りつぶし)を置く。三角だけの記号は
+    FF のクロックに見えるので使わない。幅は中心の端子に [N-1:0]、線に斜線と本数(束は太線にプロトコルと幅)。線は端子の高さをそろえてまっすぐ。
+  enforce:
+  - render
+  - lint
+  lint: '[向き] [幅] [未接続] [重なり]'
+  applies:
+  - interface
+  origin: 「input/output端子を枠内に並べる。input/outputのアイコンでわかるようにする」「バス幅がわかるようにする」「中心に示したいブロック、左と右に接続元と接続先」「枠内の上側にモジュール名、インスタンス名」「枠内に三角はFFのクロックに見えるので辞めたい」「ブロックの枠内に端子アイコンは入れて」「枠の上だった」

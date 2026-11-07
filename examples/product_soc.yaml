@@ -1,0 +1,296 @@
+# 製品規模のサンプル: アプリケーション向け SoC の構成図(説明用の設計例・架空)
+#  CPU 4コア + RT MCU + Audio DSP、NPU/GPU/VPU/カメラ/表示、PCIe/USB、多数の周辺。
+#  バスは CPU グループ(アプリ / RT / Audio)と速度(APB)で分けている。
+#  機能・個数・周波数・アドレスは説明用の例で、特定の製品の構成ではない。
+style: {fifo_label: side}
+meta:
+  note: "ハーネスの出力例(製品規模・バス分割の設計例)。機能・個数・周波数・アドレスは説明用の例で、特定の製品の構成ではない。NoC と各バスのクロックは推定(図中「仮」)。"
+chip: {label: "アプリケーション SoC(製品規模の設計例)"}
+
+clocks:
+  sources:
+    - {id: xtal, label: XTAL, freq: 24MHz, kind: osc}
+  plls:
+    - {id: arm_pll, label: ARM PLL, in: xtal, freq: 1.8GHz}
+    - {id: sys_pll, label: SYS PLL1/2/3, in: xtal, freq: 800MHz-1GHz, assumed: true}
+    - {id: dram_pll, label: DRAM PLL, in: xtal, freq: 1GHz}
+  domains:
+    - {id: a53,  label: CPU,   freq: 1.8GHz, from: arm_pll, color: "#2563eb"}
+    - {id: m7,   label: MCU,    freq: 800MHz, from: sys_pll, color: "#0891b2"}
+    - {id: dsp,  label: DSP,   freq: 800MHz, from: sys_pll, color: "#0d9488"}
+    - {id: noc,  label: NoC,   freq: 800MHz, from: sys_pll, assumed: true, color: "#475569"}
+    - {id: ml,   label: ML,    freq: 1GHz,   from: sys_pll, assumed: true, color: "#9333ea"}
+    - {id: gpu,  label: GPU,   freq: 1GHz,   from: sys_pll, assumed: true, color: "#db2777"}
+    - {id: vpu,  label: VPU,   freq: 800MHz, from: sys_pll, assumed: true, color: "#ea580c"}
+    - {id: media, label: MEDIA, freq: 500MHz, from: sys_pll, assumed: true, color: "#ca8a04"}
+    - {id: hsio, label: HSIO,  freq: 500MHz, from: sys_pll, assumed: true, color: "#16a34a"}
+    - {id: ipg,  label: IPG,   freq: 133MHz, from: sys_pll, assumed: true, color: "#64748b"}
+    - {id: rt,   label: RT,    freq: 400MHz, from: sys_pll, assumed: true, color: "#15803d"}
+    - {id: aud,  label: AUDIO, freq: 400MHz, from: sys_pll, assumed: true, color: "#6d28d9"}
+    - {id: ddr,  label: DDR,   freq: 1GHz,   from: dram_pll, color: "#b45309"}
+
+external:
+  - {id: dram, label: LPDDR4/DDR4, sub: x32, kind: memory, ports: [{id: p}]}
+  - {id: nvme, label: PCIe Device, status: assumed, ports: [{id: p}]}
+  - {id: usbdev, label: USB Devices, status: assumed, ports: [{id: p}]}
+  - {id: cam, label: Camera ×2, status: assumed, ports: [{id: p}]}
+  - {id: disp, label: Display, sub: HDMI/DSI/LVDS, status: assumed, ports: [{id: p}]}
+
+pads:
+  - {id: pad_ddr,  label: DDR x32,       side: S, bw: 16GB/s}
+  - {id: pad_pcie, label: PCIe Gen3 x1,  side: W, bw: 985MB/s}
+  - {id: pad_usb,  label: USB3.0 ×2,     side: W, bw: 1.25GB/s}
+  - {id: pad_csi,  label: MIPI CSI ×2,   side: E, bw: "1.5GB/s(仮)"}
+  - {id: pad_disp, label: HDMI/DSI/LVDS, side: E, bw: "2.2GB/s(仮)"}
+
+buses:
+  # ---- CPU グループ(アプリケーション): 高帯域のマスタと DDR はここ ----
+  - id: noc
+    label: Main NoC (CPU)
+    color: "#2563eb"
+    owner: a53
+    width: 128
+    clock_domain: noc
+    status: assumed
+    attach:
+      - l2.ace
+      - npu.m
+      - {port: npu.s, addr: "0x1120_0000/2M"}
+      - gpu3d.m
+      - {port: gpu3d.s, addr: "0x1100_0000/64K"}
+      - gpu2d.m
+      - {port: gpu2d.s, addr: "0x1101_0000/64K"}
+      - vpu.m
+      - {port: vpu.s, addr: "0x1110_0000/256K"}
+      - media.m
+      - hsio.m
+      - {port: hsio.s, addr: "0x1140_0000/2M"}
+      - {port: rom.s, addr: "0x0000_0000/256K"}
+      - {port: ocram.s, addr: "0x0010_0000/512K"}
+      - {port: pciew.s, addr: "0x2000_0000/128M"}
+      - {port: gic.s, addr: "0x1000_0000/1M"}
+      - {port: ddrc.s, addr: "0x8000_0000-0xFFFF_FFFF", fifo: 32}
+      - {port: ddrcfg.s, addr: "0x1180_0000/4M"}
+      - {port: conn.s, addr: "0x1200_0000-0x120A_FFFF"}
+      - {port: aips4.s, addr: "0x1300_0000/1M"}
+      - {port: apbbr.s, addr: "0x1400_0000/4M"}
+  # ---- 遅い周辺は APB に(CPU グループの下) ----
+  - id: apb
+    label: Peripheral APB
+    color: "#0284c7"
+    owner: a53
+    type: shared
+    width: 32
+    clock_domain: ipg
+    attach:
+      - apbbr.m
+      - {port: gpio.s, addr: "0x1409_0000-0x140D_FFFF"}
+      - {port: wdog.s, addr: "0x140E_0000-0x1410_FFFF"}
+      - {port: gpt13.s, addr: "0x1411_0000-0x1413_FFFF"}
+      - {port: sysctl.s, addr: "0x1400_0000-0x1408_FFFF"}
+      - {port: ecspi.s, addr: "0x1414_0000-0x1416_FFFF"}
+      - {port: uart13.s, addr: "0x1417_0000-0x1419_FFFF"}
+      - {port: i2c14.s, addr: "0x141A_0000-0x141D_FFFF"}
+      - {port: uart4.s, addr: "0x141E_0000/64K"}
+      - {port: mu.s, addr: "0x141F_0000/64K"}
+      - {port: i2c56.s, addr: "0x1420_0000-0x1421_FFFF"}
+  # ---- RT MCU グループ(リアルタイム制御) ----
+  - id: rt
+    label: RT Bus (MCU)
+    color: "#16a34a"
+    owner: m7
+    width: 64
+    clock_domain: rt
+    status: assumed
+    attach:
+      - m7.m
+      - {port: can.s, addr: "0x1600_0000-0x1601_FFFF"}
+      - {port: pwm.s, addr: "0x1602_0000-0x1605_FFFF"}
+      - {port: gpt46.s, addr: "0x1606_0000-0x1608_FFFF"}
+      - {port: syscnt.s, addr: "0x1609_0000/64K"}
+  # ---- Audio DSP グループ(オーディオ) ----
+  - id: aud
+    label: Audio Bus (DSP)
+    color: "#7c3aed"
+    owner: dsp
+    width: 64
+    clock_domain: aud
+    status: assumed
+    attach:
+      - dsp.m
+      - {port: dsp.s, addr: "0x1710_0000/512K"}
+      - {port: audio.s, addr: "0x1700_0000-0x170C_FFFF"}
+
+# バス間は双方向(どの CPU からも全アドレスに届くように)。to_b = A→B へ転送する窓、default = A で他に当たらない全て
+# レイテンシの目安(値は仮置き: 既定値。決まったら各 buses/blocks に latency: を書く)
+latency:
+  unit: cpu
+  accesses:
+    - {from: a53, to: uart4, op: read, title: "CPU → UART4(APB)リード"}
+    - {from: m7, to: ddrc, op: read, title: "RT MCU → DDR(RT→NoC)リード"}
+    - {from: dsp, to: ocram, op: read, title: "DSP → OCRAM(Audio→NoC)リード"}
+
+bus_links:
+  - {between: [noc, rt],  label: NoC⇄RT,    to_b: ["0x1600_0000-0x1609_FFFF"], to_a: default}
+  - {between: [noc, aud], label: NoC⇄Audio, to_b: ["0x1700_0000-0x170C_FFFF", "0x1710_0000/512K"], to_a: default}
+
+blocks:
+  # ---- CPU グループ ----
+  - id: a53
+    label: CPU Core
+    count: 4
+    cpu: true
+    clock_domain: a53
+    attached:              # コアの枠に引っ付けて描く L1(コアごと)
+      - {id: l1i, label: I$, sub: 32KB, kind: memory, ports: [{id: m, role: M, width: 128}]}
+      - {id: l1d, label: D$, sub: 32KB, kind: memory, ports: [{id: m, role: M, width: 128}]}
+  - {id: l2, label: L2$, sub: 512KB, kind: memory, place: N, clock_domain: a53,
+     ports: [{id: i, role: S}, {id: d, role: S}, {id: ace, role: M, width: 128}]}
+  - {id: npu, label: NPU, sub: 2.3 TOPS, place: N, clock_domain: ml, ports: [{id: m, role: M, width: 128}, {id: s, role: S, width: 32}]}
+  - {id: gpu3d, label: GPU 3D, sub: 3D, place: N, clock_domain: gpu, ports: [{id: m, role: M, width: 128}, {id: s, role: S, width: 32}]}
+  - {id: gpu2d, label: GPU 2D, sub: 2D, place: N, clock_domain: gpu, ports: [{id: m, role: M, width: 64}, {id: s, role: S, width: 32}]}
+  - id: vpu
+    label: VPU
+    place: N
+    clock_domain: vpu
+    ports: [{id: m, role: M, width: 128}, {id: s, role: S, width: 32}]
+    children:
+      - {id: vdec, label: Decoder, sub: H.265, count: 2}
+      - {id: venc, label: Encoder, sub: H.264}
+  - id: media
+    label: Media Subsys
+    place: N
+    clock_domain: media
+    ports: [{id: m, role: M, width: 128}, {id: csi, dir: inout}, {id: dout, dir: inout}]
+    children:
+      - {id: csi, label: MIPI CSI, count: 2}
+      - {id: isp, label: ISP, count: 2}
+      - {id: dwe, label: Dewarp}
+      - {id: isi, label: Img Capture}
+      - {id: lcdif, label: Display, count: 3}
+      - {id: dsi, label: MIPI DSI}
+      - {id: hdmi, label: HDMI Tx}
+  - id: hsio
+    label: HS-IO Subsys
+    place: N
+    clock_domain: hsio
+    ports: [{id: m, role: M, width: 64}, {id: s, role: S, width: 32}, {id: usb, dir: inout}, {id: pcie, dir: inout}]
+    children:
+      - {id: usb3, label: USB3.0 DRD, count: 2}
+      - {id: pcie, label: PCIe Gen3 x1}
+  - {id: rom, label: Boot ROM, sub: 256KB, kind: memory, clock_domain: noc, ports: [{id: s, role: S}]}
+  - {id: ocram, label: On-chip RAM, sub: 512KB, kind: memory, clock_domain: noc, ports: [{id: s, role: S}]}
+  - {id: gic, label: Int Ctrl, clock_domain: a53, ports: [{id: s, role: S, width: 64}]}
+  - {id: pciew, label: PCIe Window, sub: 128MB, clock_domain: hsio, ports: [{id: s, role: S}]}
+  - {id: ddrc, label: DDR Ctrl, sub: Inline ECC, clock_domain: ddr, latency: {read: 40, write: 12}, ports: [{id: s, role: S, width: 128}, {id: phy, dir: inout}]}
+  - {id: ddrcfg, label: DDRC Regs, clock_domain: ipg, ports: [{id: s, role: S, width: 32}]}
+  - id: conn
+    label: Connectivity
+    pack: true
+    owner: a53
+    clock_domain: ipg
+    ports: [{id: s, role: S, width: 32}]
+    children:
+      - {id: caam, label: Crypto, addr: "0x1200_0000/256K"}
+      - {id: usdhc1, label: SDHC1, addr: "0x1204_0000/64K"}
+      - {id: usdhc2, label: SDHC2, addr: "0x1205_0000/64K"}
+      - {id: usdhc3, label: SDHC3, addr: "0x1206_0000/64K"}
+      - {id: flexspi, label: QSPI, addr: "0x1207_0000/64K"}
+      - {id: sdma1, label: DMA1, addr: "0x1208_0000/64K"}
+      - {id: fec, label: Ethernet1, addr: "0x1209_0000/64K"}
+      - {id: eqos, label: Ethernet2, addr: "0x120A_0000/64K"}
+  - id: aips4
+    label: Media Regs
+    pack: true
+    owner: a53
+    clock_domain: ipg
+    ports: [{id: s, role: S, width: 32}]
+    children:
+      - {id: isi_r, label: Img Capture, addr: "0x1300_0000/64K"}
+      - {id: isp0_r, label: ISP0, addr: "0x1301_0000/64K"}
+      - {id: isp1_r, label: ISP1, addr: "0x1302_0000/64K"}
+      - {id: dwe_r, label: Dewarp, addr: "0x1303_0000/64K"}
+      - {id: csi0_r, label: CSI1, addr: "0x1304_0000/64K"}
+      - {id: csi1_r, label: CSI2, addr: "0x1305_0000/64K"}
+      - {id: dsi_r, label: DSI, addr: "0x1306_0000/64K"}
+      - {id: lcd1_r, label: Display1, addr: "0x1307_0000/64K"}
+      - {id: lcd2_r, label: Display2, addr: "0x1308_0000/64K"}
+      - {id: mblk_r, label: Media Ctrl, addr: "0x1309_0000/64K"}
+      - {id: pphy_r, label: PCIe PHY, addr: "0x130A_0000/64K"}
+      - {id: hsblk_r, label: HS-IO Ctrl, addr: "0x130B_0000/64K"}
+      - {id: hdblk_r, label: HDMI Ctrl, addr: "0x130C_0000/16K"}
+      - {id: lcd3_r, label: Display3, addr: "0x130D_0000/4K"}
+      - {id: hdmi_r, label: HDMI Tx, addr: "0x130E_0000/32K"}
+  - id: apbbr
+    label: AXI2APB
+    ports: [{id: s, role: S, width: 128, clock_domain: noc}, {id: m, role: M, width: 32, clock_domain: ipg}]
+  # 遅い周辺(APB)
+  - {id: gpio, label: GPIO, count: 5, owner: a53, clock_domain: ipg, ports: [{id: s, role: S}]}
+  - {id: wdog, label: WDT, count: 3, owner: a53, clock_domain: ipg, ports: [{id: s, role: S}]}
+  - {id: gpt13, label: Timer1-3, count: 3, owner: a53, clock_domain: ipg, ports: [{id: s, role: S}]}
+  - id: sysctl
+    label: System Ctrl
+    pack: true
+    owner: a53
+    clock_domain: ipg
+    ports: [{id: s, role: S}]
+    children:
+      - {id: tmu, label: Thermal, addr: "0x1400_0000/64K"}
+      - {id: iomuxc, label: Pin Mux, addr: "0x1401_0000/64K"}
+      - {id: gpr, label: Sys Regs, addr: "0x1402_0000/64K"}
+      - {id: ocotp, label: eFuse, addr: "0x1403_0000/64K"}
+      - {id: anatop, label: Analog Ctrl, addr: "0x1404_0000/64K"}
+      - {id: snvs, label: Secure RTC, addr: "0x1405_0000/64K"}
+      - {id: ccm, label: Clock Ctrl, addr: "0x1406_0000/64K"}
+      - {id: src, label: Reset Ctrl, addr: "0x1407_0000/64K"}
+      - {id: gpc, label: Power Ctrl, addr: "0x1408_0000/64K"}
+  - {id: ecspi, label: SPI, count: 3, owner: a53, clock_domain: ipg, ports: [{id: s, role: S}]}
+  - {id: uart13, label: UART1-3, count: 3, owner: a53, clock_domain: ipg, ports: [{id: s, role: S}]}
+  - {id: i2c14, label: I2C1-4, count: 4, owner: a53, clock_domain: ipg, ports: [{id: s, role: S}]}
+  - {id: uart4, label: UART4, owner: a53, clock_domain: ipg, ports: [{id: s, role: S}]}
+  - {id: mu, label: Mailbox, owner: a53, clock_domain: ipg, ports: [{id: s, role: S}]}
+  - {id: i2c56, label: I2C5-6, count: 2, owner: a53, clock_domain: ipg, ports: [{id: s, role: S}]}
+
+  # ---- RT MCU グループ ----
+  - {id: m7, label: RT MCU, sub: TCM 256KB, cpu: true, clock_domain: m7, ports: [{id: m, role: M, width: 64}]}
+  - {id: can, label: CAN-FD, count: 2, owner: m7, clock_domain: rt, ports: [{id: s, role: S}]}
+  - {id: pwm, label: PWM, count: 4, owner: m7, clock_domain: rt, ports: [{id: s, role: S}]}
+  - {id: gpt46, label: Timer4-6, count: 3, owner: m7, clock_domain: rt, ports: [{id: s, role: S}]}
+  - {id: syscnt, label: Sys Counter, owner: m7, clock_domain: rt, ports: [{id: s, role: S}]}
+
+  # ---- Audio DSP グループ ----
+  - {id: dsp, label: Audio DSP, cpu: true, clock_domain: dsp, ports: [{id: m, role: M, width: 64}, {id: s, role: S, width: 32}]}
+  - id: audio
+    label: Audio Periph
+    pack: true
+    owner: dsp
+    clock_domain: aud
+    ports: [{id: s, role: S, width: 32}]
+    children:
+      - {id: sai1, label: I2S1, addr: "0x1700_0000/64K"}
+      - {id: sai2, label: I2S2, addr: "0x1701_0000/64K"}
+      - {id: sai3, label: I2S3, addr: "0x1702_0000/64K"}
+      - {id: sai5, label: I2S4, addr: "0x1703_0000/64K"}
+      - {id: sai6, label: I2S5, addr: "0x1704_0000/64K"}
+      - {id: sai7, label: I2S6, addr: "0x1705_0000/64K"}
+      - {id: easrc, label: ASRC, addr: "0x1706_0000/64K"}
+      - {id: micfil, label: PDM Mic, addr: "0x1707_0000/64K"}
+      - {id: aud2htx, label: HDMI Audio, addr: "0x1708_0000/64K"}
+      - {id: xcvr, label: S/PDIF, addr: "0x1709_0000/64K"}
+      - {id: sdma3, label: DMA3, addr: "0x170A_0000/64K"}
+      - {id: sdma2, label: DMA2, addr: "0x170B_0000/64K"}
+      - {id: audblk, label: Audio Ctrl, addr: "0x170C_0000/64K"}
+
+links:
+  - {from: l1i.m, to: l2.i, width: 128, clock: 1.8GHz}
+  - {from: l1d.m, to: l2.d, width: 128, clock: 1.8GHz}
+  - {from: ddrc.phy, to: pad_ddr}
+  - {from: pad_ddr, to: dram.p}
+  - {from: hsio.pcie, to: pad_pcie}
+  - {from: pad_pcie, to: nvme.p}
+  - {from: hsio.usb, to: pad_usb}
+  - {from: pad_usb, to: usbdev.p}
+  - {from: pad_csi, to: media.csi}
+  - {from: cam.p, to: pad_csi, dir: fwd}
+  - {from: media.dout, to: pad_disp}
+  - {from: pad_disp, to: disp.p, dir: fwd}

@@ -1,0 +1,56 @@
+# ブロック間の接続図の例(構造は例): NPU を中心に、左に接続元・右に接続先
+interface:
+  title: NPU(u_npu)の接続
+  center:
+    module: npu_top
+    instance: u_npu
+    ports:
+      - {name: clk, dir: in}
+      - {name: rst_n, dir: in}
+      - {name: s_axi, dir: in, bus: AXI4-Lite, width: 32}
+      - {name: dma_req, dir: in, width: 4}
+      - {name: m_axi, dir: out, bus: AXI4, width: 128}
+      - {name: irq, dir: out}
+      - {name: busy, dir: out}
+      - {name: dbg_bus, dir: inout, width: 8}
+      - {name: test_mode, dir: in, tie: 0}
+  left:
+    - module: crg
+      instance: u_crg
+      ports:
+        - {name: npu_clk, dir: out}
+        - {name: npu_rst_n, dir: out}
+    - module: axi_noc
+      instance: u_noc
+      ports:
+        - {name: m3_axi, dir: out, bus: AXI4-Lite, width: 32}
+    - module: dma_engine
+      instance: u_dma
+      ports:
+        - {name: req, dir: out, width: 4}
+  right:
+    - module: axi_noc
+      instance: u_noc
+      ports:
+        - {name: s2_axi, dir: in, bus: AXI4, width: 128}
+    - module: gic
+      instance: u_gic
+      ports:
+        - {name: spi_irq, dir: in, width: 1}
+    - module: pmu
+      instance: u_pmu
+      ports:
+        - {name: npu_busy, dir: in}
+    - module: debug_mux
+      instance: u_dbg
+      ports:
+        - {name: npu_dbg, dir: inout, width: 8}
+  nets:
+    - {from: u_crg.npu_clk, to: u_npu.clk}
+    - {from: u_crg.npu_rst_n, to: u_npu.rst_n}
+    - {from: u_noc.m3_axi, to: u_npu.s_axi}
+    - {from: u_dma.req, to: u_npu.dma_req}
+    - {from: u_npu.m_axi, to: u_noc.s2_axi}
+    - {from: u_npu.irq, to: u_gic.spi_irq}
+    - {from: u_npu.busy, to: u_pmu.npu_busy}
+    - {from: u_npu.dbg_bus, to: u_dbg.npu_dbg}

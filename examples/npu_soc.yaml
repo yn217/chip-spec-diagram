@@ -1,0 +1,209 @@
+# サンプル: NPU-SoC 論理図 (座標指定版)。クロックは clocks: と clock_domain で指定し、周波数・CDCを自動表示。
+canvas: [1300, 900]
+chip:
+  label: NPU-SoC
+  rect: [130, 40, 1040, 740]
+external:
+- id: host
+  label: Host
+  rect: [10, 310, 90, 70]
+  ports:
+  - {id: e, side: E}
+- id: net
+  label: Network
+  rect: [1200, 310, 90, 70]
+  ports:
+  - {id: w, side: W}
+- id: dram
+  label: LPDDR5
+  sub: 8GB
+  kind: memory
+  rect: [835, 810, 180, 60]
+  ports:
+  - {id: n, side: N}
+pads:
+- id: pad_pcie
+  label: PCIe Gen4 x4
+  at: [130, 345]
+  side: W
+  bw: 8GB/s
+- id: pad_eth
+  label: 10GbE
+  at: [1170, 345]
+  side: E
+  bw: 1.25GB/s
+- id: pad_ddr
+  label: LPDDR5 x32
+  at: [925, 780]
+  side: S
+  bw: 25.6GB/s
+buses:
+- id: axi
+  label: AXI Interconnect
+  width: 256
+  rect: [400, 313, 540, 64]
+  attach: [pcie.axi_m, pcie.axi_s, cpu.axi_m, dma.axi_m, dma.cfg_s, sram.axi_s, npu.axi_m, npu.axi_s, ddrc.axi_s, eth.axi_m,
+    eth.axi_s]
+  clock_domain: core_clk
+blocks:
+- id: pcie
+  label: PCIe Ctrl
+  clock_domain: pcie_clk
+  rect: [170, 295, 120, 100]
+  ports:
+  - {id: phy, side: W, dir: inout}
+  - {id: axi_m, side: E, at: 0.42, role: M}
+  - {id: axi_s, side: E, at: 0.58, role: S}
+- id: cpu
+  label: CPU
+  clock_domain: core_clk
+  sub: RISC-V ×2
+  rect: [380, 100, 140, 90]
+  ports:
+  - {id: axi_m, side: S, role: M, width: 128}
+- id: dma
+  label: DMA
+  clock_domain: core_clk
+  rect: [580, 100, 140, 90]
+  ports:
+  - {id: axi_m, side: S, at: 0.35, role: M}
+  - {id: cfg_s, side: S, at: 0.65, role: S}
+- id: sram
+  label: Shared SRAM
+  clock_domain: core_clk
+  sub: 4MB
+  kind: memory
+  rect: [780, 100, 160, 90]
+  ports:
+  - {id: axi_s, side: S, role: S}
+- id: npu
+  label: NPU Cluster
+  clock_domain: npu_clk
+  rect: [380, 500, 380, 240]
+  ports:
+  - {id: axi_m, side: N, at: 0.25, role: M, name: axi_m}
+  - {id: axi_s, side: N, at: 0.4, role: S, name: axi_s}
+  children:
+  - id: nctl
+    label: Ctrl
+    rect: [400, 540, 110, 70]
+    ports:
+    - {id: n, side: N, name: cfg}
+    - {id: s, side: S, name: start}
+  - id: lbuf
+    label: Local Buf
+    sub: 1MB
+    kind: memory
+    rect: [530, 540, 210, 70]
+    ports:
+    - {id: n_rd, side: N, at: 551, name: rd}
+    - {id: n_wr, side: N, at: 593, name: wr}
+    - {id: s_rd, side: S, at: 593, name: rd}
+    - {id: s_wr, side: S, at: 712, name: wr}
+  - id: pe
+    label: PE Array
+    sub: 32×32 MAC
+    rect: [400, 650, 340, 75]
+    ports:
+    - {id: ctl, side: N, at: 455, name: ctl}
+    - {id: in, side: N, at: 593, name: in}
+    - {id: out, side: N, at: 712, name: out}
+- id: ddrc
+  label: DDR Ctrl
+  clock_domain: ddr_clk
+  rect: [820, 520, 140, 90]
+  ports:
+  - {id: axi_s, side: N, at: 0.4, role: S}
+  - {id: phy, side: S, at: 0.4, dir: inout}
+- id: eth
+  label: Ethernet
+  clock_domain: eth_clk
+  rect: [1030, 295, 110, 100]
+  ports:
+  - {id: axi_m, side: W, at: 0.3, role: M}
+  - {id: axi_s, side: W, at: 0.7, role: S}
+  - {id: phy, side: E, dir: inout}
+links:
+- {from: host.e, to: pad_pcie, dir: both}
+- {from: pad_pcie, to: pcie.phy}
+- {from: eth.phy, to: pad_eth}
+- {from: pad_eth, to: net.w, dir: both}
+- {from: ddrc.phy, to: pad_ddr}
+- {from: pad_ddr, to: dram.n, dir: both}
+- {from: npu.axi_s, to: nctl.n, level: 1}
+- {from: npu.axi_s, to: lbuf.n_wr, level: 1}
+- {from: lbuf.n_rd, to: npu.axi_m, level: 1}
+- {from: nctl.s, to: pe.ctl, level: 1}
+- {from: lbuf.s_rd, to: pe.in, level: 1, width: 1024, clock: 1.2GHz}
+- {from: pe.out, to: lbuf.s_wr, level: 1, width: 512, clock: 1.2GHz}
+groups:
+- id: power
+  label: 電源ドメイン
+  regions:
+  - label: PD_TOP (常時ON)
+    color: '#16a34a'
+    rects:
+    - [155, 78, 990, 333]
+  - label: PD_NPU
+    color: '#9333ea'
+    rects:
+    - [365, 430, 410, 268]
+  - label: PD_DDR
+    color: '#ea580c'
+    rects:
+    - [805, 495, 170, 130]
+scenario:
+  title: 推論1回の処理
+  steps:
+  - title: 重みロード
+    master: Host (PCIe)
+    note: ホストが PCIe 経由で重みと入力データを DRAM に書き込む。
+    flows:
+    - path: [host.e, pad_pcie, pcie.phy, pcie.axi_m, axi, ddrc.axi_s, ddrc.phy, pad_ddr, dram.n]
+      color: '#2563eb'
+      label: 重み/入力
+  - title: DMA転送
+    master: DMA
+    note: CPU が DMA を起動。DMA が DRAM から読み出し、NPU の Local Buf へ書き込む。
+    flows:
+    - path: [cpu.axi_m, axi, dma.cfg_s]
+      color: '#475569'
+      style: control
+      label: 起動
+    - path: [dram.n, pad_ddr, ddrc.phy, ddrc.axi_s, axi, npu.axi_s, lbuf.n_wr]
+      color: '#2563eb'
+      label: 重み/入力
+  - title: 演算
+    master: NPU Ctrl
+    note: PE Array が Local Buf から読み出して演算し、結果を Local Buf に書き戻す。
+    flows:
+    - path: [nctl.s, pe.ctl]
+      color: '#475569'
+      style: control
+    - path: [lbuf.s_rd, pe.in]
+      color: '#2563eb'
+    - path: [pe.out, lbuf.s_wr]
+      color: '#ea580c'
+  - title: 結果返送
+    master: NPU
+    note: NPU が AXI マスタとして結果を PCIe 経由でホストへ書き込む。
+    flows:
+    - path: [lbuf.n_rd, npu.axi_m, axi, pcie.axi_s, pcie.phy, pad_pcie, host.e]
+      color: '#ea580c'
+      label: 結果
+clocks:
+  sources:
+  - {id: xtal, label: XTAL, freq: 25MHz, kind: osc}
+  - {id: pcie_ref, label: PCIe REFCLK, freq: 100MHz, kind: pad}
+  - {id: eth_ref, label: ETH REFCLK, freq: 156.25MHz, kind: pad}
+  plls:
+  - {id: pll_sys, label: SYS PLL, in: xtal, freq: 2.0GHz}
+  - {id: pll_npu, label: NPU PLL, in: xtal, freq: 2.4GHz}
+  - {id: pll_ddr, label: DDR PLL, in: xtal, freq: 1.6GHz}
+  - {id: pll_pcie, label: PCIe PHY PLL, in: pcie_ref, freq: 500MHz}
+  domains:
+  - {id: core_clk, label: core, freq: 1GHz, from: pll_sys, div: 2, color: '#2563eb'}
+  - {id: npu_clk, label: npu, freq: 1.2GHz, from: pll_npu, div: 2, gate: true, color: '#9333ea'}
+  - {id: ddr_clk, label: ddr, freq: 800MHz, from: pll_ddr, div: 2, color: '#ea580c'}
+  - {id: pcie_clk, label: pcie, freq: 250MHz, from: pll_pcie, div: 2, color: '#db2777'}
+  - {id: eth_clk, label: eth, freq: 156.25MHz, from: eth_ref, color: '#0891b2'}

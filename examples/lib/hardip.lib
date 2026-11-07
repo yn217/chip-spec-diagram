@@ -1,0 +1,6 @@
+library (hardip) {
+  area_unit : "1um2" ;
+  cell (CPU_CLUSTER_2C) {
+    area : 2890000.0 ;
+  }
+}

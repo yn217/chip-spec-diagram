@@ -1,0 +1,631 @@
+# 自動生成(gen_stress.py): マクロ・バスが多い時の確認用。構造は架空
+chip:
+  label: 大規模 SoC(動作確認用・架空)
+clocks:
+  domains:
+  - id: cpu
+    label: cpu
+    freq: 2GHz
+  - id: noc
+    label: noc
+    freq: 1GHz
+  - id: media
+    label: media
+    freq: 600MHz
+  - id: net
+    label: net
+    freq: 500MHz
+  - id: ctl
+    label: ctl
+    freq: 400MHz
+  - id: ahb
+    label: ahb
+    freq: 200MHz
+  - id: apb
+    label: apb
+    freq: 100MHz
+  - id: ddr
+    label: ddr
+    freq: 1.6GHz
+buses:
+- id: noc
+  label: Main NoC
+  width: 256
+  clock_domain: noc
+  attach:
+  - l3.m
+  - m0.m
+  - port: m0.s
+    addr: 0x10000000/1M
+  - m1.m
+  - port: m1.s
+    addr: 0x10100000/1M
+  - m2.m
+  - port: m2.s
+    addr: 0x10200000/1M
+  - m3.m
+  - port: m3.s
+    addr: 0x10300000/1M
+  - m4.m
+  - port: m4.s
+    addr: 0x10400000/1M
+  - m5.m
+  - port: m5.s
+    addr: 0x10500000/1M
+  - m6.m
+  - port: m6.s
+    addr: 0x10600000/1M
+  - m7.m
+  - port: m7.s
+    addr: 0x10700000/1M
+  - port: ddrc.s
+    addr: 0x8000_0000-0xFFFF_FFFF
+  - port: sram.s
+    addr: 0x10800000/4M
+  - port: rom.s
+    addr: 0x0000_0000/256K
+  - port: gic.s
+    addr: 0x10C00000/1M
+  - port: x2h.s
+    addr:
+    - 0x10DB0000/64K
+    - 0x10DC0000/64K
+    - 0x10DD0000/64K
+    - 0x10DE0000/64K
+    - 0x10DF0000/64K
+    - 0x10E00000/64K
+    - 0x10E10000/4K
+    - 0x10E11000/4K
+    - 0x10E12000/4K
+    - 0x10E13000/4K
+    - 0x10E14000/4K
+    - 0x10E15000/4K
+    - 0x10E16000/4K
+    - 0x10E17000/4K
+    - 0x10E18000/4K
+    - 0x10E19000/4K
+    - 0x10E1A000/4K
+    - 0x10E1B000/4K
+    - 0x10E1C000/4K
+    - 0x10E1D000/4K
+    - 0x10E1E000/4K
+    - 0x10E1F000/4K
+- id: net
+  label: Net AXI
+  width: 64
+  clock_domain: net
+  attach:
+  - netcpu.m
+  - port: net0.s
+    addr: 0x10D00000/64K
+  - port: net1.s
+    addr: 0x10D10000/64K
+  - port: net2.s
+    addr: 0x10D20000/64K
+  - port: net3.s
+    addr: 0x10D30000/64K
+  - port: net4.s
+    addr: 0x10D40000/64K
+  - port: net5.s
+    addr: 0x10D50000/64K
+- id: ctl
+  label: Ctrl AXI
+  width: 64
+  clock_domain: ctl
+  attach:
+  - ctlcpu.m
+  - port: ctl0.s
+    addr: 0x10D60000/64K
+  - port: ctl1.s
+    addr: 0x10D70000/64K
+  - port: ctl2.s
+    addr: 0x10D80000/64K
+  - port: ctl3.s
+    addr: 0x10D90000/64K
+  - port: ctl4.s
+    addr: 0x10DA0000/64K
+- id: ahb
+  label: AHB
+  width: 32
+  clock_domain: ahb
+  attach:
+  - x2h.m
+  - port: ahb0.s
+    addr: 0x10DB0000/64K
+  - port: ahb1.s
+    addr: 0x10DC0000/64K
+  - port: ahb2.s
+    addr: 0x10DD0000/64K
+  - port: ahb3.s
+    addr: 0x10DE0000/64K
+  - port: ahb4.s
+    addr: 0x10DF0000/64K
+  - port: ahb5.s
+    addr: 0x10E00000/64K
+  - port: h2p.s
+    addr:
+    - 0x10E10000/4K
+    - 0x10E11000/4K
+    - 0x10E12000/4K
+    - 0x10E13000/4K
+    - 0x10E14000/4K
+    - 0x10E15000/4K
+    - 0x10E16000/4K
+    - 0x10E17000/4K
+    - 0x10E18000/4K
+    - 0x10E19000/4K
+    - 0x10E1A000/4K
+    - 0x10E1B000/4K
+    - 0x10E1C000/4K
+    - 0x10E1D000/4K
+    - 0x10E1E000/4K
+    - 0x10E1F000/4K
+- id: apb
+  label: APB
+  width: 32
+  clock_domain: apb
+  attach:
+  - h2p.m
+  - port: apb0.s
+    addr: 0x10E10000/4K
+  - port: apb1.s
+    addr: 0x10E11000/4K
+  - port: apb2.s
+    addr: 0x10E12000/4K
+  - port: apb3.s
+    addr: 0x10E13000/4K
+  - port: apb4.s
+    addr: 0x10E14000/4K
+  - port: apb5.s
+    addr: 0x10E15000/4K
+  - port: apb6.s
+    addr: 0x10E16000/4K
+  - port: apb7.s
+    addr: 0x10E17000/4K
+  - port: apb8.s
+    addr: 0x10E18000/4K
+  - port: apb9.s
+    addr: 0x10E19000/4K
+  - port: apb10.s
+    addr: 0x10E1A000/4K
+  - port: apb11.s
+    addr: 0x10E1B000/4K
+  - port: apb12.s
+    addr: 0x10E1C000/4K
+  - port: apb13.s
+    addr: 0x10E1D000/4K
+  - port: apb14.s
+    addr: 0x10E1E000/4K
+  - port: apb15.s
+    addr: 0x10E1F000/4K
+bus_links:
+- between:
+  - noc
+  - net
+  to_b:
+  - 0x10D00000/64K
+  - 0x10D10000/64K
+  - 0x10D20000/64K
+  - 0x10D30000/64K
+  - 0x10D40000/64K
+  - 0x10D50000/64K
+  to_a: default
+- between:
+  - noc
+  - ctl
+  to_b:
+  - 0x10D60000/64K
+  - 0x10D70000/64K
+  - 0x10D80000/64K
+  - 0x10D90000/64K
+  - 0x10DA0000/64K
+  to_a: default
+blocks:
+- id: cpu
+  label: CPU Core
+  count: 8
+  cpu: true
+  clock_domain: cpu
+  attached:
+  - id: l1i
+    label: I$
+    sub: 64KB
+    kind: memory
+    ports:
+    - id: m
+      role: M
+      width: 128
+  - id: l1d
+    label: D$
+    sub: 64KB
+    kind: memory
+    ports:
+    - id: m
+      role: M
+      width: 128
+- id: l2
+  label: L2$
+  sub: 1MB
+  count: 8
+  kind: memory
+  clock_domain: cpu
+  ports:
+  - id: i
+    role: S
+  - id: d
+    role: S
+  - id: io
+    role: M
+  - id: do
+    role: M
+- id: l3
+  label: L3$
+  sub: 16MB
+  kind: memory
+  clock_domain: cpu
+  ports:
+  - id: i
+    role: S
+  - id: d
+    role: S
+  - id: m
+    role: M
+    width: 256
+- id: m0
+  label: GPU
+  clock_domain: media
+  ports:
+  - id: m
+    role: M
+    width: 128
+  - id: s
+    role: S
+    width: 32
+- id: m1
+  label: NPU
+  clock_domain: media
+  ports:
+  - id: m
+    role: M
+    width: 128
+  - id: s
+    role: S
+    width: 32
+- id: m2
+  label: VPU Dec
+  clock_domain: media
+  ports:
+  - id: m
+    role: M
+    width: 128
+  - id: s
+    role: S
+    width: 32
+- id: m3
+  label: VPU Enc
+  clock_domain: media
+  ports:
+  - id: m
+    role: M
+    width: 128
+  - id: s
+    role: S
+    width: 32
+- id: m4
+  label: ISP
+  clock_domain: media
+  ports:
+  - id: m
+    role: M
+    width: 128
+  - id: s
+    role: S
+    width: 32
+- id: m5
+  label: Display
+  clock_domain: media
+  ports:
+  - id: m
+    role: M
+    width: 128
+  - id: s
+    role: S
+    width: 32
+- id: m6
+  label: DMA0
+  clock_domain: noc
+  ports:
+  - id: m
+    role: M
+    width: 128
+  - id: s
+    role: S
+    width: 32
+- id: m7
+  label: DMA1
+  clock_domain: noc
+  ports:
+  - id: m
+    role: M
+    width: 128
+  - id: s
+    role: S
+    width: 32
+- id: ddrc
+  label: DDR Ctrl
+  sub: 4ch
+  clock_domain: ddr
+  ports:
+  - id: s
+    role: S
+    width: 256
+- id: sram
+  label: Sys SRAM
+  sub: 4MB
+  kind: memory
+  clock_domain: noc
+  ports:
+  - id: s
+    role: S
+- id: rom
+  label: Boot ROM
+  sub: 256KB
+  kind: memory
+  clock_domain: noc
+  ports:
+  - id: s
+    role: S
+- id: gic
+  label: GIC
+  clock_domain: noc
+  ports:
+  - id: s
+    role: S
+- id: netcpu
+  label: Net MCU
+  cpu: true
+  clock_domain: net
+  ports:
+  - id: m
+    role: M
+    width: 64
+- id: net0
+  label: Net0
+  clock_domain: net
+  ports:
+  - id: s
+    role: S
+- id: net1
+  label: Net1
+  clock_domain: net
+  ports:
+  - id: s
+    role: S
+- id: net2
+  label: Net2
+  clock_domain: net
+  ports:
+  - id: s
+    role: S
+- id: net3
+  label: Net3
+  clock_domain: net
+  ports:
+  - id: s
+    role: S
+- id: net4
+  label: Net4
+  clock_domain: net
+  ports:
+  - id: s
+    role: S
+- id: net5
+  label: Net5
+  clock_domain: net
+  ports:
+  - id: s
+    role: S
+- id: ctlcpu
+  label: Ctrl MCU
+  cpu: true
+  clock_domain: ctl
+  ports:
+  - id: m
+    role: M
+    width: 64
+- id: ctl0
+  label: Ctrl0
+  clock_domain: ctl
+  ports:
+  - id: s
+    role: S
+- id: ctl1
+  label: Ctrl1
+  clock_domain: ctl
+  ports:
+  - id: s
+    role: S
+- id: ctl2
+  label: Ctrl2
+  clock_domain: ctl
+  ports:
+  - id: s
+    role: S
+- id: ctl3
+  label: Ctrl3
+  clock_domain: ctl
+  ports:
+  - id: s
+    role: S
+- id: ctl4
+  label: Ctrl4
+  clock_domain: ctl
+  ports:
+  - id: s
+    role: S
+- id: ahb0
+  label: QSPI
+  clock_domain: ahb
+  ports:
+  - id: s
+    role: S
+- id: ahb1
+  label: SDIO
+  clock_domain: ahb
+  ports:
+  - id: s
+    role: S
+- id: ahb2
+  label: Crypto
+  clock_domain: ahb
+  ports:
+  - id: s
+    role: S
+- id: ahb3
+  label: TRNG
+  clock_domain: ahb
+  ports:
+  - id: s
+    role: S
+- id: ahb4
+  label: USB2
+  clock_domain: ahb
+  ports:
+  - id: s
+    role: S
+- id: ahb5
+  label: CAN
+  clock_domain: ahb
+  ports:
+  - id: s
+    role: S
+- id: apb0
+  label: UART0
+  clock_domain: apb
+  ports:
+  - id: s
+    role: S
+- id: apb1
+  label: I2C0
+  clock_domain: apb
+  ports:
+  - id: s
+    role: S
+- id: apb2
+  label: SPI0
+  clock_domain: apb
+  ports:
+  - id: s
+    role: S
+- id: apb3
+  label: GPIO0
+  clock_domain: apb
+  ports:
+  - id: s
+    role: S
+- id: apb4
+  label: PWM0
+  clock_domain: apb
+  ports:
+  - id: s
+    role: S
+- id: apb5
+  label: WDT0
+  clock_domain: apb
+  ports:
+  - id: s
+    role: S
+- id: apb6
+  label: TMR0
+  clock_domain: apb
+  ports:
+  - id: s
+    role: S
+- id: apb7
+  label: RTC0
+  clock_domain: apb
+  ports:
+  - id: s
+    role: S
+- id: apb8
+  label: UART1
+  clock_domain: apb
+  ports:
+  - id: s
+    role: S
+- id: apb9
+  label: I2C1
+  clock_domain: apb
+  ports:
+  - id: s
+    role: S
+- id: apb10
+  label: SPI1
+  clock_domain: apb
+  ports:
+  - id: s
+    role: S
+- id: apb11
+  label: GPIO1
+  clock_domain: apb
+  ports:
+  - id: s
+    role: S
+- id: apb12
+  label: PWM1
+  clock_domain: apb
+  ports:
+  - id: s
+    role: S
+- id: apb13
+  label: WDT1
+  clock_domain: apb
+  ports:
+  - id: s
+    role: S
+- id: apb14
+  label: TMR1
+  clock_domain: apb
+  ports:
+  - id: s
+    role: S
+- id: apb15
+  label: RTC1
+  clock_domain: apb
+  ports:
+  - id: s
+    role: S
+- id: x2h
+  label: AXI2AHB
+  ports:
+  - id: s
+    role: S
+    clock_domain: noc
+  - id: m
+    role: M
+    clock_domain: ahb
+- id: h2p
+  label: AHB2APB
+  ports:
+  - id: s
+    role: S
+    clock_domain: ahb
+  - id: m
+    role: M
+    clock_domain: apb
+links:
+- from: l1i.m
+  to: l2.i
+- from: l1d.m
+  to: l2.d
+- from: l2.io
+  to: l3.i
+- from: l2.do
+  to: l3.d
+latency:
+  accesses:
+  - from: cpu
+    to: apb3
+    op: read
+    title: CPU → GPIO0(AXI→AHB→APB)リード
+

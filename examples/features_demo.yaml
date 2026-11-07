@@ -1,0 +1,38 @@
+# 描画機能のデモ(自動配置): count(×N) / fifo / 機能だけの枠(端子なし) / クロスバー内CDC・AFIFO / ブロック列挙のグループ
+chip: {label: 機能テスト}
+clocks:
+  domains: [{id: core, freq: 1GHz}, {id: npu, freq: 1.2GHz}, {id: io, freq: 250MHz}]
+external: [{id: host, label: Host, ports: [{id: p}]}]
+pads: [{id: pad_pcie, label: PCIe, side: W, bw: 8GB/s}]
+buses:
+  - id: axi
+    label: AXI
+    width: 256
+    clock_domain: core
+    attach: [cpu.m, {port: pcie.m, fifo: 16}, pcie.s, {port: npu.s, fifo: 32}, npu.m, sram.s]
+blocks:
+  - {id: cpu, label: CPU, clock_domain: core, ports: [{id: m, role: M, width: 128}]}
+  - {id: pcie, label: PCIe, clock_domain: io, ports: [{id: phy, dir: inout}, {id: m, role: M}, {id: s, role: S}]}
+  - {id: sram, label: SRAM, sub: 4MB, kind: memory, clock_domain: core, ports: [{id: s, role: S}]}
+  - id: npu
+    label: NPU
+    clock_domain: npu
+    cols: 4
+    ports: [{id: m, role: M}, {id: s, role: S}]
+    children:
+      - {id: ctl, label: Ctrl, order: 0, ports: [{id: a}]}
+      - {id: pe, label: PE Array, count: 4, order: 1, ports: [{id: b}]}
+      - {id: lb, label: Local Buf, kind: memory, order: 3, ports: [{id: a}]}
+      - {id: ifq, label: Out FIFO, kind: fifo, depth: 64, order: 2, ports: [{id: i}, {id: o}]}
+      - {id: act, label: Activation, order: 4}
+      - {id: pool, label: Pooling, order: 5}
+links:
+  - {from: pad_pcie, to: pcie.phy}
+  - {from: pad_pcie, to: host.p}
+  - {from: npu.s, to: ctl.a, level: 1}
+  - {from: pe.b, to: ifq.i, level: 1}
+  - {from: ifq.o, to: lb.a, level: 1, fifo: 8}
+groups:
+  - id: power
+    label: 電源
+    regions: [{label: PD_NPU, color: "#9333ea", blocks: [npu]}, {label: PD_TOP, color: "#16a34a", blocks: [cpu, sram, axi]}]

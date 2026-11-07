@@ -1,0 +1,45 @@
+# レイテンシ目安の例(構造は例): CPU → AXI → AHB → APB と順にアクセスして、到着とデータが戻るまでのサイクル数を見る
+chip: {label: MCU 級 SoC (レイテンシ検討の例)}
+meta:
+  note: 構造・数値は説明用の例。サイクル数は目安で、「仮」の項目は既定値(latency を書いていない)。
+clocks:
+  domains:
+    - {id: cpu, label: cpu, freq: 1GHz}
+    - {id: sys, label: sys, freq: 500MHz}
+    - {id: ahb, label: ahb, freq: 250MHz}
+    - {id: per, label: per, freq: 100MHz}
+latency:
+  unit: cpu          # 図の数字: CPU クロック換算(cpu) / ns / local(各要素のクロック数)
+  cdc: 2             # CDC 1回の同期: 受け側クロック 2 個
+  accesses:
+    - {from: cpu, to: sram, op: read,  title: "CPU → SRAM(AXI)リード"}
+    - {from: cpu, to: flash, op: read, title: "CPU → Flash Ctrl(AHB)リード"}
+    - {from: cpu, to: uart, op: read,  title: "CPU → UART(APB)リード"}
+    - {from: cpu, to: uart, op: write, title: "CPU → UART(APB)ライト"}
+buses:
+  - {id: axi, label: AXI Main, width: 128, clock_domain: sys, latency: {req: 2, resp: 1},
+     attach: [cpu.m, dma.m, dma.s, sram.s, ddrc.s, x2h.s]}
+  - {id: ahb, label: AHB, width: 32, clock_domain: ahb, latency: {req: 1, resp: 1},
+     attach: [x2h.m, flash.s, crypto.s, h2p.s]}
+  - {id: apb, label: APB, width: 32, clock_domain: per,
+     attach: [h2p.m, uart.s, timer.s, gpio.s, i2c.s]}
+blocks:
+  - {id: cpu, label: CPU, sub: Cortex-M 級, cpu: true, clock_domain: cpu, latency: {issue: 1},
+     ports: [{id: m, role: M, width: 64}]}
+  - {id: dma, label: DMA, clock_domain: sys, ports: [{id: m, role: M}, {id: s, role: S, width: 32}]}
+  - {id: sram, label: SRAM, sub: 512KB, kind: memory, clock_domain: sys, latency: {read: 2, write: 1},
+     ports: [{id: s, role: S}]}
+  - {id: ddrc, label: DDR Ctrl, clock_domain: sys, latency: {read: 40, write: 10}, ports: [{id: s, role: S}]}
+  - id: x2h
+    label: AXI2AHB
+    latency: {req: 2, resp: 1}
+    ports: [{id: s, role: S, clock_domain: sys}, {id: m, role: M, width: 32, clock_domain: ahb}]
+  - {id: flash, label: Flash Ctrl, clock_domain: ahb, latency: {read: 3, write: 2}, ports: [{id: s, role: S}]}
+  - {id: crypto, label: Crypto, clock_domain: ahb, ports: [{id: s, role: S}]}
+  - id: h2p
+    label: AHB2APB
+    ports: [{id: s, role: S, clock_domain: ahb}, {id: m, role: M, clock_domain: per}]
+  - {id: uart, label: UART, clock_domain: per, ports: [{id: s, role: S}]}
+  - {id: timer, label: Timer, count: 2, clock_domain: per, ports: [{id: s, role: S}]}
+  - {id: gpio, label: GPIO, clock_domain: per, ports: [{id: s, role: S}]}
+  - {id: i2c, label: I2C, clock_domain: per, ports: [{id: s, role: S}]}
