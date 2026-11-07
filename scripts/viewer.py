@@ -166,6 +166,8 @@ def build(spec_path, out, decisions=None, floorplan=None, board=None):
             tr = "".join(f"<tr><td>{esc(ct.lab(r['a']))}</td><td>{esc(ct.lab(r['b']))}</td>"
                          f"<td>{'非同期(CDC)' if r['kind'] == 'async' else '比率同期 ' + r['ratio']}</td><td>{esc(', '.join(r['via']))}</td></tr>"
                          for r in ct.cross)
+            if ct.test:
+                svg_ck += ("<h3>テストモード</h3>" + ct.svg(f"クロック系統図(テストモード: {ct.test.get('mode_pin', 'テスト端子')}=1)", mode="test"))
             parts.append(f"<h2>クロック系統図</h2><div class='frame'>{svg_ck}</div>"
                          f"<div class='tw'><table><tr><th>ドメイン</th><th>ドメイン</th><th>種類</th><th>経路</th></tr>{tr}</table></div>"
                          + (f"<div class='warn'>{esc(chr(10).join(wk))}</div>" if wk else ""))

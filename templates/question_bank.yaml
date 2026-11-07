@@ -416,6 +416,29 @@ items:
     priority: 30
     modes: [concept, rtl, mixed]
     depends_on: [reset_domains]
+  - id: clock_sdc
+    category: クロック系統
+    q: SDC を書くために、クロック端子名・PLL/分周の出力ピン名・ジッタ(不確かさ)は決まっていますか？分周をレジスタで切り替える所、歯抜け(パルス間引き)のクロックはありますか？
+    free: true
+    options:
+      - {label: 決まっている, description: 端子名・ピン名・ジッタを入力}
+      - {label: 仮置きで進める, description: "SDC の下書きに <...> で残す"}
+    effect: clock.sdc の下書き、clock.md の「SDC に必要な情報」
+    assume: 仮置きで進める
+    priority: 34
+    modes: [concept, rtl, mixed]
+  - id: clock_test
+    category: クロック系統
+    q: テストモード(スキャン)のクロックは？テストモードを選ぶ端子、外部から入れるテスト用クロックの端子と周波数、テスト用クロックを通さないドメイン(理由)は？
+    free: true
+    options:
+      - {label: 決まっている, description: 端子・周波数を入力}
+      - {label: 仮置きで進める, description: TEST_MODE 端子、SCAN_CLK 100MHz を全ドメインに素通しで仮置き}
+      - {label: 今回は描かない, description: ""}
+    effect: TM(テストモード切替)の表示、テストモードの図、clock_test.sdc
+    assume: 仮置きで進める
+    priority: 33
+    modes: [concept, rtl, mixed]
   - id: bandwidth
     category: 帯域
     q: 外部IF・主要経路の帯域(規格・レーン数・メモリ幅)は？

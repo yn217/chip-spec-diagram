@@ -197,20 +197,26 @@ scenario:
       label: 結果
 clocks:
   sources:
-  - {id: xtal, label: XTAL, freq: 25MHz, kind: osc}
-  - {id: pcie_ref, label: PCIe REFCLK, freq: 100MHz, kind: pad}
-  - {id: eth_ref, label: ETH REFCLK, freq: 156.25MHz, kind: pad}
+  - {id: xtal, label: XTAL, freq: 25MHz, kind: osc, pin: XTAL_IN, jitter: 20ps}
+  - {id: pcie_ref, label: PCIe REFCLK, freq: 100MHz, kind: pad, pin: PCIE_REFCLK_P, jitter: 30ps}
+  - {id: eth_ref, label: ETH REFCLK, freq: 156.25MHz, kind: pad, pin: ETH_REFCLK, jitter: 30ps}
   plls:
-  - {id: pll_sys, label: SYS PLL, in: xtal, freq: 2.0GHz}
-  - {id: pll_npu, label: NPU PLL, in: xtal, freq: 2.4GHz}
-  - {id: pll_ddr, label: DDR PLL, in: xtal, freq: 1.6GHz}
-  - {id: pll_pcie, label: PCIe PHY PLL, in: pcie_ref, freq: 500MHz}
+  - {id: pll_sys, label: SYS PLL, in: xtal, freq: 2.0GHz, mult: 80, pin: u_crg/u_pll_sys/CLKOUT, jitter: 25ps}
+  - {id: pll_npu, label: NPU PLL, in: xtal, freq: 2.4GHz, mult: 96, pin: u_crg/u_pll_npu/CLKOUT, jitter: 25ps}
+  - {id: pll_ddr, label: DDR PLL, in: xtal, freq: 1.6GHz, mult: 64, pin: u_crg/u_pll_ddr/CLKOUT, jitter: 20ps}
+  - {id: pll_pcie, label: PCIe PHY PLL, in: pcie_ref, freq: 500MHz, mult: 5, pin: u_pcie_phy/u_pll/CLKOUT, jitter: 30ps}
   domains:
-  - {id: core_clk, label: core, freq: 1GHz, from: pll_sys, div: 2, color: '#2563eb'}
-  - {id: npu_clk, label: npu, freq: 1.2GHz, from: pll_npu, div: 2, gate: true, color: '#9333ea'}
-  - {id: ddr_clk, label: ddr, freq: 800MHz, from: pll_ddr, div: 2, color: '#ea580c'}
-  - {id: pcie_clk, label: pcie, freq: 250MHz, from: pll_pcie, div: 2, color: '#db2777'}
+  - {id: core_clk, label: core, freq: 1GHz, from: pll_sys, div: 2, pin: u_crg/u_div_core/Q, color: '#2563eb'}
+  - {id: npu_clk, label: npu, freq: 1.2GHz, from: pll_npu, div: 2, gate: sw, pin: u_crg/u_div_npu/Q, color: '#9333ea'}
+  - {id: ddr_clk, label: ddr, freq: 800MHz, from: pll_ddr, div: 2, pin: u_crg/u_div_ddr/Q, color: '#ea580c'}
+  - {id: pcie_clk, label: pcie, freq: 250MHz, from: pll_pcie, div: 2, pin: u_pcie_phy/u_div/Q, color: '#db2777'}
   - {id: eth_clk, label: eth, freq: 156.25MHz, from: eth_ref, color: '#0891b2'}
+  test:                           # テストモード(スキャン): TEST_MODE=1 で外部端子のクロックを素通し
+    mode_pin: TEST_MODE
+    case: {SCAN_EN: 0}            # キャプチャ時の値(シフト時は 1)
+    default: scan_clk             # test_from を書かないドメインはこれ
+    sources:
+    - {id: scan_clk, label: SCAN_CLK, freq: 100MHz, kind: pad, pin: SCAN_CLK}
 resets:
   controller: {always_on: true}   # リセット制御は常時オン(POR だけでリセット)
   default: rst_sys                # reset_domain のないブロック・バスは system ドメイン

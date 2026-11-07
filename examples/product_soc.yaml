@@ -9,11 +9,11 @@ chip: {label: "アプリケーション SoC(製品規模の設計例)"}
 
 clocks:
   sources:
-    - {id: xtal, label: XTAL, freq: 24MHz, kind: osc}
-    - {id: rc32k, label: RC OSC, freq: 32kHz, kind: rc}
+    - {id: xtal, label: XTAL, freq: 24MHz, kind: osc, pin: XTAL_24M_IN, jitter: 20ps}
+    - {id: rc32k, label: RC OSC, freq: 32kHz, kind: rc, pin: u_aon/u_rcosc/CLK}
   plls:
-    - {id: arm_pll, label: ARM PLL, in: xtal, freq: 1.8GHz, mult: 75}
-    - {id: sys_pll, label: SYS PLL1, in: xtal, freq: 800MHz}
+    - {id: arm_pll, label: ARM PLL, in: xtal, freq: 1.8GHz, mult: 75, pin: u_ccm/u_arm_pll/CLKOUT, jitter: 25ps}
+    - {id: sys_pll, label: SYS PLL1, in: xtal, freq: 800MHz, pin: u_ccm/u_sys_pll1/CLKOUT}
     - {id: sys_pll2, label: SYS PLL2, in: xtal, freq: 1GHz, assumed: true}
     - {id: dram_pll, label: DRAM PLL, in: xtal, freq: 1GHz}
   muxes:
@@ -25,13 +25,18 @@ clocks:
     - {id: noc,  label: NoC,   freq: 800MHz, from: sys_pll, assumed: true, color: "#475569"}
     - {id: ml,   label: ML,    freq: 1GHz,   from: sys_pll2, gate: sw, assumed: true, color: "#9333ea"}
     - {id: gpu,  label: GPU,   freq: 1GHz,   from: sys_pll2, gate: sw, assumed: true, color: "#db2777"}
-    - {id: vpu,  label: VPU,   freq: 800MHz, from: sys_pll, gate: sw, assumed: true, color: "#ea580c"}
+    - {id: vpu,  label: VPU,   freq: 800MHz, from: sys_pll2, gap: 4/5, gate: sw, assumed: true, color: "#ea580c"}
     - {id: media, label: MEDIA, freq: 500MHz, from: sys_pll2, div: 2, assumed: true, color: "#ca8a04"}
     - {id: hsio, label: HSIO,  freq: 500MHz, from: sys_pll2, div: 2, assumed: true, color: "#16a34a"}
-    - {id: ipg,  label: IPG,   freq: 133MHz, from: noc, div: 6, assumed: true, color: "#64748b"}
-    - {id: rt,   label: RT,    freq: 400MHz, from: m7, div: 2, assumed: true, color: "#15803d"}
+    - {id: ipg,  label: IPG,   freq: 133MHz, from: noc, div: {values: [4, 6, 8], default: 6, reg: "CCM_IPG_DIV[1:0]"}, assumed: true, color: "#64748b"}
+    - {id: rt,   label: RT,    freq: 400MHz, from: m7, div: 2, test_from: none, test_note: 常時動作の RT 系はスキャン対象外(別の BIST), assumed: true, color: "#15803d"}
     - {id: aud,  label: AUDIO, freq: 400MHz, from: dsp, div: 2, gate: sw, assumed: true, color: "#6d28d9"}
     - {id: ddr,  label: DDR,   freq: 1GHz,   from: dram_pll, color: "#b45309"}
+  test:
+    mode_pin: TEST_MODE
+    default: scan_clk
+    sources:
+      - {id: scan_clk, label: SCAN_CLK, freq: 100MHz, kind: pad, pin: SCAN_CLK}
 
 external:
   - {id: dram, label: LPDDR4/DDR4, sub: x32, kind: memory, ports: [{id: p}]}
@@ -325,7 +330,7 @@ resets:
      isolation: true}
   - {id: rst_ddr, label: DDR, sources: [por, bod, rst_n, wdt], rail: vdd_soc, load: 300mA, clock_domain: ddr, stretch: 8, wait: [dram_pll], after: [rst_sys]}
   - {id: rst_gpu, label: GPU, sources: [por, bod, rst_n, wdt, sw_mm], rail: vdd_gpu, load: 900mA, clock_domain: gpu, wait: [sys_pll2], after: [rst_ddr], isolation: true}
-  - {id: rst_vpu, label: VPU, sources: [por, bod, rst_n, wdt, sw_mm], rail: vdd_soc, load: 400mA, clock_domain: vpu, after: [rst_ddr], isolation: true}
+  - {id: rst_vpu, label: VPU, sources: [por, bod, rst_n, wdt, sw_mm], rail: vdd_soc, load: 400mA, clock_domain: vpu, wait: [sys_pll2], after: [rst_ddr], isolation: true}
   - {id: rst_ml, label: ML, sources: [por, bod, rst_n, wdt, sw_mm], rail: vdd_gpu, load: 800mA, stagger: 2,
      power_switch: {inrush: 300mA}, clock_domain: ml, wait: [sys_pll2], after: [rst_ddr], isolation: true}
   - {id: rst_rt, label: RT(MCU), sources: [por, bod, rst_n], rail: vdd_soc, load: 100mA, clock_domain: rt, after: [rst_sys], isolation: true}

@@ -14,6 +14,7 @@ diagram.yaml の clocks: を使う
       - {id: cpu_sel, label: CPU clk sel, in: [pll_arm, xtal], default: pll_arm, sel: SW}
     domains:
       - {id: core_clk, label: core, freq: 1.0GHz, from: pll_sys, div: 2, gate: sw, color: "#2563eb"}
+      - {id: ipg, label: IPG, freq: 133MHz, from: noc, div: {values: [4, 6, 8], default: 6, reg: "CCM_IPG_DIV[1:0]"}}  # レジスタで切替
       - {id: ipg, label: IPG, freq: 133MHz, from: noc, div: 6}       # 別ドメインから分周してもよい
       - {id: a53, label: CPU, freq: 1.8GHz, from: cpu_sel, dvfs: [1.8GHz, 1.2GHz, 600MHz]}
   gate: true | sw(ソフトウェア制御)| auto(アイドルで自動)。block/bus に clock_domain: を書くと所属と CDC が決まる。
@@ -27,7 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from chipdiag import Chip, load, esc, wlen, INK, to_png
 
 PAL = ["#2563eb", "#9333ea", "#db2777", "#0891b2", "#ea580c", "#16a34a", "#ca8a04"]
-ASYNC_C, SYNC_C, GRAY = "#dc2626", "#2563eb", "#64748b"
+ASYNC_C, SYNC_C, GRAY, TEST_C = "#dc2626", "#2563eb", "#64748b", "#ea580c"
 GATE = {True: "CG", "sw": "CG(SW)", "auto": "CG(自動)", "hw": "CG(自動)"}
 
 
@@ -47,6 +48,37 @@ def hz(s):
     return float(m.group(1)) * {"": 1, "k": 1e3, "K": 1e3, "M": 1e6, "G": 1e9}[m.group(2)]
 
 
+def gapr(n):
+    """歯抜け(パルスを間引くクロック): gap: 3/4 または {keep: 3, of: 4} → (3, 4)。なければ None"""
+    g = n.get("gap") if n else None
+    if not g:
+        return None
+    if isinstance(g, dict):
+        return int(g["keep"]), int(g["of"])
+    a, b = str(g).split("/")
+    return int(a), int(b)
+
+
+def divs(n):
+    """分周: div: 2 / div: [1, 2, 4] / div: {values: [1, 2, 4, 8], default: 2, reg: CPU_DIV[1:0]}
+    → (既定の分周, 選べる値のリスト or None, レジスタ名)"""
+    d = (n or {}).get("div")
+    if d is None or d == "":
+        return 1.0, None, None
+    if isinstance(d, dict):
+        vals = [float(x) for x in d.get("values", [])]
+        dfl = float(d.get("default", vals[0] if vals else 1))
+        return dfl, (vals if len(vals) > 1 else None), d.get("reg")
+    if isinstance(d, (list, tuple)):
+        vals = [float(x) for x in d]
+        return float(n.get("div_default", vals[0])), (vals if len(vals) > 1 else None), n.get("div_reg")
+    return float(d), None, None
+
+
+def dtxt(v):
+    return f"{v:g}"
+
+
 def fmt(v):
     if v is None:
         return "?"
@@ -64,7 +96,11 @@ class ClockTree:
         self.srcs, self.plls = ck.get("sources", []), ck.get("plls", [])
         self.muxes, self.doms = ck.get("muxes", []), ck.get("domains", [])
         self.node = {}
-        for kind, lst in (("src", self.srcs), ("pll", self.plls), ("mux", self.muxes), ("dom", self.doms)):
+        self.test = ck.get("test") or {}
+        self.tsrcs = self.test.get("sources", [])
+        for t in self.tsrcs:
+            t["_test"] = True
+        for kind, lst in (("src", self.srcs + self.tsrcs), ("pll", self.plls), ("mux", self.muxes), ("dom", self.doms)):
             for n in lst:
                 n["_k"] = kind
                 self.node[n["id"]] = n
@@ -112,14 +148,16 @@ class ClockTree:
                                          f"{'÷' + str(n['refdiv']) if n.get('refdiv') else ''} = {fmt(calc)} だが freq は {fmt(v)}")
                     v = v or calc
             else:
-                div = float(n.get("div", 1) or 1)
-                v = pf / div if pf else None
+                div = divs(n)[0]                 # 切り替えられる分周は既定値で計算
+                g = gapr(n)
+                v = pf / div * (g[0] / g[1] if g else 1) if pf else None     # 歯抜けは平均周波数
                 r = self.root.get(p) if p else None
                 if n["_k"] == "dom":
                     dv = hz(n.get("freq"))
                     if v and dv and abs(v - dv) / dv > 0.01:
                         self.warn.append(f"[周波数] {self.lab(i)}: {self.lab(p)} {fmt(pf)}"
-                                         f"{' ÷' + str(n['div']) if n.get('div') else ''} = {fmt(v)} だが freq は {fmt(dv)}")
+                                         f"{' ÷' + str(n['div']) if n.get('div') else ''}"
+                                         f"{' 歯抜け ' + str(g[0]) + '/' + str(g[1]) if g else ''} = {fmt(v)} だが freq は {fmt(dv)}")
                     v = v or dv          # 比の判定は計算値で(表示は書いた値)
             busy.discard(i)
             self.fq[i], self.root[i] = v, r
@@ -145,18 +183,40 @@ class ClockTree:
                 self.warn.append(f"[未定義] {self.lab(d['id'])}: from {d['from']} がない")
             if not d.get("from"):
                 self.info.append(f"[info] {self.lab(d['id'])}: 源(from)が未決")
+        if self.test:
+            tid = {t["id"] for t in self.tsrcs}
+            for d in self.doms:
+                tf = self.test_from(d)
+                if tf is None:
+                    if not d.get("test_note"):
+                        self.warn.append(f"[テスト] {self.lab(d['id'])}: テストモードのクロックがない(test_from)。スキャンで FF を動かせない。"
+                                         f"意図的なら test_note に理由を書く")
+                elif tf not in tid:
+                    self.warn.append(f"[未定義] {self.lab(d['id'])}: test_from {tf} が clocks.test.sources にない")
+            if not self.test.get("mode_pin"):
+                self.info.append("[info] clocks.test.mode_pin(テストモードを選ぶ端子)が未決")
+        for d in self.doms:
+            g = gapr(d)
+            if g and not (0 < g[0] < g[1]):
+                self.warn.append(f"[周波数] {self.lab(d['id'])}: 歯抜け {g[0]}/{g[1]} は 0 < 残す数 < 周期 にする")
         self.calc()
         imp = {}
         for d in self.doms:
             p, dv = d.get("from"), hz(d.get("freq"))
             if p in self.node and dv and not hz(self.node[p].get("freq")) and self.node[p]["_k"] != "dom":
-                imp.setdefault(p, []).append((dv * float(d.get("div", 1) or 1), d))
+                imp.setdefault(p, []).append((dv * divs(d)[0], d))
         for p, lst in imp.items():
             vs = {round(v / 1e3) for v, _ in lst}
             if len(vs) > 1:
                 self.warn.append(f"[周波数] {self.lab(p)} の出力が決まらない: " + ", ".join(
-                    f'{self.lab(d["id"])} {d["freq"]}{" ÷" + str(d["div"]) if d.get("div") else ""} → {fmt(v)}' for v, d in lst)
+                    f'{self.lab(d["id"])} {d["freq"]}{" ÷" + dtxt(divs(d)[0]) if divs(d)[0] != 1 else ""} → {fmt(v)}' for v, d in lst)
                     + "。PLL を分けるか div を書く")
+
+    def test_from(self, d):
+        if not self.test:
+            return None
+        tf = d.get("test_from", self.test.get("default"))
+        return None if tf in (None, "none", False) else tf
 
     # ---------- 所属と乗り換え ----------
     def members(self):
@@ -186,14 +246,16 @@ class ClockTree:
         return mem
 
     def chain(self, i):
-        """ドメインから上へ: [(ノード, ここまでの分周の積)]。MUX・PLL で止まる(その先は別の源になりうる)"""
-        out, n, k, seen = [], self.node.get(i), 1.0, set()
+        """ドメインから上へ: [(ノード, 分周の積, 歯抜けの積)]。MUX・PLL で止まる(その先は別の源になりうる)"""
+        out, n, k, g, seen = [], self.node.get(i), 1.0, 1.0, set()
         while n is not None and n["id"] not in seen:
             seen.add(n["id"])
-            out.append((n["id"], k))
+            out.append((n["id"], k, g))
             if n["_k"] != "dom":
                 break
-            k *= float(n.get("div", 1) or 1)
+            k *= divs(n)[0]
+            gg = gapr(n)
+            g *= gg[0] / gg[1] if gg else 1
             n = self.node.get(n.get("from"))
         return out
 
@@ -201,18 +263,21 @@ class ClockTree:
         """共通の祖先から分周だけで作られていて、比が整数 → sync(比率同期)。それ以外 → async"""
         if a not in self.node or b not in self.node:
             return "async", None
-        ca, cb = dict(self.chain(a)), dict(self.chain(b))
-        com = [x for x, _ in self.chain(a) if x in cb]
+        ca = {x: (k, g) for x, k, g in self.chain(a)}
+        cb = {x: (k, g) for x, k, g in self.chain(b)}
+        com = [x for x, _, _ in self.chain(a) if x in cb]
         if not com:
             return "async", None
         x = com[0]
-        ka, kb = ca[x], cb[x]
+        (ka, ga), (kb, gb) = ca[x], cb[x]
         fa, fb = hz(self.node[a].get("freq")), hz(self.node[b].get("freq"))
-        if fa and fb and abs((fa / fb) - (kb / ka)) / (kb / ka) > 0.01:
+        exp = (kb * ga) / (ka * gb)                     # 期待する周波数比(歯抜けは平均)
+        if fa and fb and abs((fa / fb) - exp) / exp > 0.01:
             return "async", None                       # 書いた周波数が分周比と合わない: 同期とは言えない
         r = max(ka, kb) / min(ka, kb)
+        var = any(divs(self.node.get(y))[1] for y, _, _ in self.chain(a) + self.chain(b) if y not in com[1:] and y != x)
         if abs(r - round(r)) < 1e-6:
-            return "sync", f"1:{round(r)}"
+            return "sync", f"1:{round(r)}" + ("・歯抜け" if ga != 1 or gb != 1 else "") + ("・設定で変わる" if var else "")
         return "async", None
 
     def crossings(self):
@@ -246,9 +311,14 @@ class ClockTree:
         return out
 
     # ---------- 描画 ----------
-    def svg(self, title="クロック系統図"):
+    def svg(self, title="クロック系統図", mode="func"):
+        """mode: func = 通常(テストの経路は細い破線)/ test = テストモード(機能の経路を薄く、テストの経路を太く)"""
+        tmode = mode == "test" and bool(self.test)
         mem = self.members()
         self.cross = cr = self.crossings()
+        if tmode:      # テストモード: テスト用クロックが同じドメインどうしは同期。違うテスト用クロックの組だけ非同期
+            cr = [dict(r, kind="async", ratio=None) for r in cr
+                  if self.test_from(self.node[r["a"]]) != self.test_from(self.node[r["b"]])]
         doms, plls, muxes, srcs = self.doms, self.plls, self.muxes, self.srcs
         # 描く順: 源から木をたどる順(分周で作るドメインは親のすぐ下)
         order, seen = [], set()
@@ -271,7 +341,7 @@ class ClockTree:
         o, ow = [], []
         SUBK = {"osc": "水晶/発振器", "pad": "外部クロック入力", "rc": "内部 RC 発振"}
         W_SRC = max([140] + [max(wlen(s.get("label", s["id"])) * 7.2, wlen(f'{s.get("freq", "")} {SUBK.get(s.get("kind", "osc"), "")}') * 6.2) + 24
-                             for s in srcs])
+                             for s in srcs + (self.tsrcs if self.test else [])])
         X_EXT = 24
         chip_x = X_EXT + W_SRC + 34
         X_INT = chip_x + 18
@@ -284,11 +354,21 @@ class ClockTree:
         X_MUX = X_PT + np_ * 12 + 22 if muxes else X_PT + np_ * 12
         W_MUX = 44 if muxes else 0
         X_DIV = X_MUX + W_MUX + (58 if muxes else 10)
-        W_DIV = 46
+        def dlab(d):
+            dfl, dvals, _ = divs(d)
+            gp = gapr(d)
+            dv = dfl != 1 or dvals
+            return "・".join(([f'÷{"/".join(dtxt(v) for v in dvals)}' if dvals else f'÷{dtxt(dfl)}'] if dv else [])
+                            + ([f"歯抜け{gp[0]}/{gp[1]}"] if gp else []))
+        W_DIV = max([46] + [wlen(dlab(d)) * 6.6 + 16 for d in doms])
         X_DT = X_DIV + W_DIV + 14                      # ドメインからの分岐の列
         nd_par = len({d["from"] for d in doms if self.node.get(d.get("from"), {}).get("_k") == "dom"})
-        X_CG = X_DT + nd_par * 10 + 14
-        W_CG = 62
+        tsrcs = self.tsrcs if self.test else []
+        nt = len(tsrcs)
+        X_TM = X_DT + nd_par * 10 + 14 + (nt * 10 + 16 if nt else 0)   # テストモード切替(TM)
+        W_TM = 30 if self.test else 0
+        X_CG = X_TM + W_TM + (18 if self.test else 0)
+        W_CG = 62 if not (mode == "test" and self.test) else 84
         X_DOM = X_CG + W_CG + 92
         W_DOM = 380
 
@@ -306,7 +386,7 @@ class ClockTree:
         pos, crow = {}, {}
         for d in doms:
             crow[d["id"]] = chips(mem[d["id"]], W_DOM - 24)
-            h = max(46 + max(1, len(crow[d["id"]])) * 24 + (14 if d.get("dvfs") else 0), 64)
+            h = max(46 + max(1, len(crow[d["id"]])) * 24 + (14 if d.get("dvfs") else 0) + (14 if divs(d)[1] else 0) + (14 if gapr(d) else 0), 64)
             pos[d["id"]] = [y, h]
             y += h + 12
         bottom = y
@@ -335,10 +415,14 @@ class ClockTree:
         place(plls, lambda p: 56, users)
         place(srcs, lambda s: 50, users)
         bottom = max([bottom] + [v[0] + v[1] + 14 for v in npos.values()])
+        for k, t in enumerate(tsrcs):                    # テスト用の外部クロックは一番下に置き、下を回して TM へ
+            npos[t["id"]] = [bottom + 6 + k * 60, 50]
+        if tsrcs:
+            bottom += 6 + nt * 60
         lanes = len(cr)
         xr = X_DOM + W_DOM
         chip_r = xr + 26 + lanes * 44 + 20
-        W, H = chip_r + 24, bottom + 64
+        W, H = chip_r + 24, bottom + 80
         o.append(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {f(W)} {f(H)}" font-family="\'Noto Sans JP\',sans-serif">'
                  f'<rect width="100%" height="100%" fill="#fff"/><defs><marker id="cka" viewBox="0 0 10 10" refX="9" refY="5" '
                  f'markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,1 L10,5 L0,9 z" fill="{INK}"/>'
@@ -382,6 +466,8 @@ class ClockTree:
             if tg:
                 ow.append(f'<path d="M{f(x_out)},{f(y_out)} L{f(tx)},{f(y_out)} M{f(tx)},{f(min(ys))} L{f(tx)},{f(max(ys))}" '
                           f'stroke="{INK}" stroke-width="1.5" fill="none"/>')
+        o.append('<g opacity=".28">' if tmode else "<g>")
+        ow.append('<g opacity=".28">' if tmode else "<g>")
         for k, s in enumerate(srcs):
             yy, hh = npos[s["id"]]
             ext = s.get("kind", "osc") in ("osc", "pad")
@@ -428,7 +514,32 @@ class ClockTree:
                               f'<path d="M{f(X_DIV - 9)},{f(cy(d["id"]) - 4.5)} L{f(X_DIV)},{f(cy(d["id"]))} L{f(X_DIV - 9)},{f(cy(d["id"]) + 4.5)}" fill="{INK}"/>')
             ow.append(f'<path d="M{f(tx)},{f(min(ys))} L{f(tx)},{f(max(ys))}" stroke="{INK}" stroke-width="1.5" fill="none"/>'
                       f'<circle cx="{f(tx)}" cy="{f(cy(pid))}" r="2.8" fill="{INK}"/>')
-        # ドメインの行: [÷n] → [CG] → ドメイン
+        o.append("</g>")
+        ow.append("</g>")
+        # テスト用クロック: 源 → 下を回る幹線 → 各ドメインの TM
+        lane = {}
+        for k, t in enumerate(tsrcs):
+            yy, hh = npos[t["id"]]
+            lx = X_TM - 12 - k * 10
+            lane[t["id"]] = lx
+            sw = 2.2 if tmode else 1.3
+            dash = "" if tmode else ' stroke-dasharray="6 3"'
+            o.append(f'<rect x="{f(X_EXT)}" y="{f(yy)}" width="{f(W_SRC)}" height="{hh}" rx="4" fill="#fff7ed" stroke="{TEST_C}" '
+                     f'stroke-width="1.6" stroke-dasharray="5 4"/><text x="{f(X_EXT + W_SRC / 2)}" y="{f(yy + 19)}" font-size="12.5" '
+                     f'font-weight="800" fill="{TEST_C}" text-anchor="middle">{esc(t.get("label", t["id"]))}</text><text x="{f(X_EXT + W_SRC / 2)}" '
+                     f'y="{f(yy + 36)}" font-size="11" fill="{GRAY}" text-anchor="middle"><tspan font-weight="700" fill="#0369a1">'
+                     f'{esc(t.get("freq", ""))}</tspan> テスト用クロック入力</text>'
+                     f'<rect x="{f(chip_x - 8)}" y="{f(yy + hh / 2 - 8)}" width="16" height="16" fill="#fed7aa" stroke="{TEST_C}" stroke-width="1.5"/>')
+            ys = [cy(d["id"]) + 8 for d in doms if self.test_from(d) == t["id"]]
+            if ys:
+                ow.append(f'<path d="M{f(X_EXT + W_SRC)},{f(yy + hh / 2)} L{f(lx)},{f(yy + hh / 2)} L{f(lx)},{f(min(ys))}" '
+                          f'stroke="#fcfcfd" stroke-width="6" fill="none"/>'
+                          f'<path d="M{f(X_EXT + W_SRC)},{f(yy + hh / 2)} L{f(lx)},{f(yy + hh / 2)} L{f(lx)},{f(min(ys))}" '
+                          f'stroke="{TEST_C}" stroke-width="{sw}" fill="none"{dash}/>')
+                for y_ in ys:
+                    ow.append(f'<path d="M{f(lx)},{f(y_)} L{f(X_TM)},{f(y_)}" stroke="{TEST_C}" stroke-width="{sw}" fill="none"{dash}/>'
+                              f'<circle cx="{f(lx)}" cy="{f(y_)}" r="2.6" fill="{TEST_C}"/>')
+        # ドメインの行: [÷n / 歯抜け] → [TM] → [CG] → ドメイン
         for d in doms:
             i = d["id"]
             yy, hh = pos[i]
@@ -438,14 +549,51 @@ class ClockTree:
                 o.append(f'<text x="{f(X_DIV - 8)}" y="{f(c_ + 4)}" font-size="10.5" font-weight="700" fill="#b45309" '
                          f'text-anchor="end">源 未決</text>')
             x = X_DIV
-            if d.get("div") and float(d["div"]) != 1:
+            o.append('<g opacity=".28">' if tmode else "<g>")
+            ow.append('<g opacity=".28">' if tmode else "<g>")
+            gp = gapr(d)
+            dfl, dvals, dreg = divs(d)
+            dv = dfl != 1 or dvals
+            if dv or gp:
+                lab = dlab(d)
+                if dvals:                                # レジスタで選ぶ分周: 既定とレジスタ名を箱の下に
+                    o.append(f'<text x="{f(X_DIV + W_DIV / 2)}" y="{f(c_ + 25)}" font-size="9.5" fill="#7c3aed" '
+                             f'text-anchor="middle">既定 ÷{dtxt(dfl)}{" ・" + esc(dreg) if dreg else " ・レジスタ未決"}</text>')
                 o.append(f'<rect x="{f(X_DIV)}" y="{f(c_ - 13)}" width="{W_DIV}" height="26" rx="3" fill="#fff" stroke="{INK}" stroke-width="1.4"/>'
-                         f'<text x="{f(X_DIV + W_DIV / 2)}" y="{f(c_ + 4.5)}" font-size="12" font-weight="800" fill="{INK}" '
-                         f'text-anchor="middle">÷{d["div"]}</text>')
+                         f'<text x="{f(X_DIV + W_DIV / 2)}" y="{f(c_ + 4.5)}" font-size="{11 if gp else 12}" font-weight="800" fill="{INK}" '
+                         f'text-anchor="middle">{lab}</text>')
+                if gp:                                   # 間引いたパルスの絵(残す数だけ山、抜いた所は点線)
+                    px, py, pw_ = X_DIV + 4, c_ - 27, (W_DIV - 8) / gp[1]
+                    path = f"M{f(px)},{f(py + 9)}"
+                    for j in range(gp[1]):
+                        x0 = px + j * pw_
+                        if j < gp[0]:
+                            path += f" L{f(x0 + pw_ * .2)},{f(py + 9)} L{f(x0 + pw_ * .2)},{f(py)} L{f(x0 + pw_ * .6)},{f(py)} L{f(x0 + pw_ * .6)},{f(py + 9)}"
+                        else:
+                            o.append(f'<rect x="{f(x0 + pw_ * .2)}" y="{f(py)}" width="{f(pw_ * .4)}" height="9" fill="none" stroke="{ASYNC_C}" '
+                                     f'stroke-width=".9" stroke-dasharray="2 1.5"/>')
+                    path += f" L{f(px + gp[1] * pw_)},{f(py + 9)}"
+                    o.append(f'<path d="{path}" fill="none" stroke="{INK}" stroke-width="1.1"/>')
                 x = X_DIV + W_DIV
+            if self.test:                                # テストモード切替(TM): 上 = 機能、下 = テスト
+                tf = self.test_from(d)
+                ow.append(f'<path d="M{f(x)},{f(c_)} L{f(X_TM)},{f(c_)}" stroke="{INK}" stroke-width="1.5" fill="none"/>')
+                o.append("</g>")
+                ow.append("</g>")
+                o.append(f'<path d="M{f(X_TM)},{f(c_ - 17)} L{f(X_TM + W_TM)},{f(c_ - 9)} L{f(X_TM + W_TM)},{f(c_ + 9)} '
+                         f'L{f(X_TM)},{f(c_ + 17)} Z" fill="#fff" stroke="{TEST_C if tf else "#94a3b8"}" stroke-width="1.5"/>'
+                         f'<text x="{f(X_TM + W_TM / 2)}" y="{f(c_ + 3.5)}" font-size="9" font-weight="800" fill="{TEST_C}" '
+                         f'text-anchor="middle">TM</text>')
+                if not tf:
+                    o.append(f'<text x="{f(X_TM + W_TM / 2)}" y="{f(c_ + 29)}" font-size="9.5" font-weight="700" fill="{ASYNC_C}" '
+                             f'text-anchor="middle">テスト用なし</text>')
+                x = X_TM + W_TM
+            else:
+                o.append("</g>")
+                ow.append("</g>")
             g = d.get("gate")
             if g:
-                gl = GATE.get(g, f"CG({g})")
+                gl = GATE.get(g, f"CG({g})") + (" TE=1" if tmode else "")
                 ow.append(f'<path d="M{f(x)},{f(c_)} L{f(X_CG)},{f(c_)}" stroke="{col}" stroke-width="1.8" fill="none"/>')
                 o.append(f'<rect x="{f(X_CG)}" y="{f(c_ - 13)}" width="{W_CG}" height="26" rx="3" fill="#fff" stroke="{col}" stroke-width="1.6"/>'
                          f'<text x="{f(X_CG + W_CG / 2)}" y="{f(c_ + 4.5)}" font-size="11" font-weight="800" fill="{col}" '
@@ -453,12 +601,16 @@ class ClockTree:
                 x = X_CG + W_CG
             ow.append(f'<path d="M{f(x)},{f(c_)} L{f(X_DOM)},{f(c_)}" stroke="{col}" stroke-width="2" fill="none" marker-end="url(#cka)"/>')
             fq = self.fq.get(i)
-            o.append(f'<text x="{f(X_DOM - 8)}" y="{f(c_ - 6)}" font-size="11.5" font-weight="800" fill="#0369a1" text-anchor="end">'
-                     f'{esc(d.get("freq") or fmt(fq))}{"(仮)" if d.get("assumed") else ""}</text>')
+            tf = self.test_from(d) if tmode else None
+            ftxt = (self.node[tf].get("freq", "") if tf else "機能クロックのまま") if tmode else \
+                f'{d.get("freq") or fmt(fq)}{"(仮)" if d.get("assumed") else ""}'
+            o.append(f'<text x="{f(X_DOM - 8)}" y="{f(c_ - 6)}" font-size="11.5" font-weight="800" '
+                     f'fill="{TEST_C if tmode else "#0369a1"}" text-anchor="end">{esc(ftxt)}</text>')
             o.append(f'<rect x="{f(X_DOM)}" y="{f(yy)}" width="{W_DOM}" height="{f(hh)}" rx="6" fill="{col}" fill-opacity=".09" '
                      f'stroke="{col}" stroke-width="2"/><text x="{f(X_DOM + 12)}" y="{f(yy + 20)}" font-size="13" font-weight="800" '
                      f'fill="{col}">{esc(d.get("label", i))}</text><text x="{f(X_DOM + W_DOM - 10)}" y="{f(yy + 20)}" font-size="10.5" '
-                     f'fill="{GRAY}" text-anchor="end">{esc(self.path(i))}</text>')
+                     f'fill="{TEST_C if tmode else GRAY}" text-anchor="end">'
+                     f'{esc((self.lab(tf) + " ← TM(素通し)" if tf else "テスト用クロックなし: " + d.get("test_note", "")) if tmode else self.path(i))}</text>')
             for r, row in enumerate(crow[i]):
                 for m, ox, w in row:
                     cx_, cy_ = X_DOM + 12 + ox, yy + 30 + r * 24
@@ -466,9 +618,25 @@ class ClockTree:
                              f'<text x="{f(cx_ + w / 2)}" y="{f(cy_ + 13.5)}" font-size="10.5" fill="{INK}" text-anchor="middle">{esc(m)}</text>')
             if not mem[i]:
                 o.append(f'<text x="{f(X_DOM + 12)}" y="{f(yy + 44)}" font-size="11" fill="#94a3b8">所属ブロックなし</text>')
+            yl = yy + hh - 8
             if d.get("dvfs"):
-                o.append(f'<text x="{f(X_DOM + 12)}" y="{f(yy + hh - 8)}" font-size="10.5" font-weight="700" fill="#7c3aed">'
+                o.append(f'<text x="{f(X_DOM + 12)}" y="{f(yl)}" font-size="10.5" font-weight="700" fill="#7c3aed">'
                          f'DVFS: {esc(" / ".join(str(v) for v in d["dvfs"]))}</text>')
+                yl -= 14
+            dfl, dvals, dreg = divs(d)
+            pf = self.fq.get(d.get("from"))
+            g_ = gapr(d)
+            if g_:
+                o.append(f'<text x="{f(X_DOM + 12)}" y="{f(yl)}" font-size="10.5" font-weight="700" fill="{ASYNC_C}">'
+                         f'歯抜け {g_[0]}/{g_[1]}: 平均 {esc(fmt(self.fq.get(i)))}・パルスの間隔は {esc(fmt(pf / dfl) if pf else "元の周期")}'
+                         f'(タイミングはこちら)</text>')
+                yl -= 14
+            if dvals:
+                g_ = gapr(d)
+                gk = g_[0] / g_[1] if g_ else 1
+                fl = " / ".join((f"<{fmt(pf / v * gk)}>" if v == dfl else fmt(pf / v * gk)) if pf else f"÷{dtxt(v)}" for v in dvals)
+                o.append(f'<text x="{f(X_DOM + 12)}" y="{f(yl)}" font-size="10.5" font-weight="700" fill="#7c3aed">'
+                         f'分周設定({esc(dreg or "レジスタ未決")}): {esc(fl).replace("&lt;", "[").replace("&gt;", "]")}</text>')
         # 乗り換え
         cr.sort(key=lambda r: abs(cy(r["a"]) - cy(r["b"])))
         for k, r in enumerate(cr):
@@ -484,8 +652,19 @@ class ClockTree:
                      f'<text x="{f(lx)}" y="{f(my + 4)}" font-size="10" font-weight="800" fill="{colr}" text-anchor="middle">{tag}</text>')
         o.append(f'<text x="12" y="{f(H - 16)}" font-size="11" fill="{GRAY}">÷n = 分周 / CG = クロックゲート(SW = ソフトウェア制御・自動 = アイドルで停止) / '
                  f'台形 = クロック切替(実線 = 通常の選択、破線 = 切替先) / 赤破線 CDC = 非同期の乗り換え(同期化が要る) / '
-                 f'青破線 1:n = 同じ PLL から整数比の同期の乗り換え / 破線の源 = チップ外</text></svg>')
+                 f'青破線 1:n = 同じ PLL から整数比の同期の乗り換え / 破線の源 = チップ外</text>'
+                 + (f'<text x="12" y="{f(H - 32)}" font-size="11" fill="{GRAY}">歯抜け k/n = n 周期のうち k 個だけパルスを残す(平均 = 元×k/n、'
+                    f'タイミングは元の周期で見る) / TM = テストモード切替({esc(str(self.test.get("mode_pin", "テスト端子")))}'
+                    f'{"=1 で" if self.test else ""} 外部のテストクロックを素通し)/ 橙 = テストの経路'
+                    f'{" / TE=1 = テスト時はゲートを開けたまま / 同じテスト用クロックのドメインどうしは同期(CDC なし)" if tmode else ""}</text>' if (self.test or any(gapr(d) for d in doms)) else "")
+                 + '</svg>')
         return "".join(o).replace("<!--LINES-->", "".join(ow), 1)
+
+    def div_md(self, d):
+        dfl, vals, reg = divs(d)
+        if vals:
+            return "÷" + "/".join(dtxt(v) for v in vals) + f"(既定 ÷{dtxt(dfl)}{', ' + reg if reg else ''})"
+        return f"÷{dtxt(dfl)}" if dfl != 1 else ""
 
     def path(self, i):
         """源までの道筋(例: XTAL → SYS PLL → ÷2)"""
@@ -502,18 +681,213 @@ class ClockTree:
 
     def md(self):
         L = ["# クロック系統", "", "## クロックドメイン", "",
-             "| ドメイン | 周波数 | 源までの道筋 | 分周 | ゲート | DVFS | 所属 |", "|---|---|---|---|---|---|---|"]
+             "| ドメイン | 周波数 | 源までの道筋 | 分周 | 歯抜け | ゲート | DVFS | テストモード | 所属 |", "|---|---|---|---|---|---|---|---|---|"]
         mem = self.members()
         for d in self.doms:
             L.append(f'| {d.get("label", d["id"])} | {d.get("freq") or fmt(self.fq.get(d["id"]))}{"(仮)" if d.get("assumed") else ""} '
-                     f'| {self.path(d["id"]) or "未決"} | {"÷" + str(d["div"]) if d.get("div") else ""} '
+                     f'| {self.path(d["id"]) or "未決"} | {self.div_md(d)} '
+                     f'| {"%d/%d" % gapr(d) if gapr(d) else ""} '
                      f'| {GATE.get(d.get("gate"), d.get("gate") or "")} | {" / ".join(map(str, d.get("dvfs", [])))} '
+                     f'| {self.lab(self.test_from(d)) if self.test_from(d) else ("なし: " + d.get("test_note", "") if self.test else "")} '
                      f'| {", ".join(mem[d["id"]])} |')
         L += ["", "## 乗り換え", "", "| ドメイン | ドメイン | 種類 | 経路 |", "|---|---|---|---|"]
         for r in self.cross:
             k = "非同期(CDC: 同期化/非同期 FIFO)" if r["kind"] == "async" else f'比率同期 {r["ratio"]}(同期の乗り換え)'
             L.append(f'| {self.lab(r["a"])} | {self.lab(r["b"])} | {k} | {", ".join(r["via"])} |')
+        _, todo = self.sdc("func")
+        L += ["", "## SDC に必要な情報", "", "| 項目 | SDC | 状態 |", "|---|---|---|"]
+        for item, cmd, ok in self.sdc_check():
+            st = "そろっている" if ok is True else ("対象なし" if ok is None else (ok if isinstance(ok, str) else "**未決**"))
+            L.append(f"| {item} | `{cmd}` | {st} |")
+        if todo:
+            L += ["", "### 未決(SDC の下書きで <...> になっている所)", ""] + [f"- {t}" for t in dict.fromkeys(todo)]
         return "\n".join(L) + "\n"
+
+    # ---------- SDC ----------
+    def sdc_check(self):
+        """SDC を書くのに要る情報がそろっているか: [(項目, コマンド, True/False/None)]"""
+        allsrc = self.srcs + self.tsrcs
+        gen = [d for d in self.doms if divs(d)[0] != 1 or divs(d)[1] or gapr(d)]
+        rows = [
+            ("クロック源の周波数", "create_clock -period", all(hz(x.get("freq")) for x in allsrc)),
+            ("クロック源の端子名", "create_clock [get_ports]", all(x.get("pin") for x in allsrc)),
+            ("デューティ比(50% 以外なら)", "create_clock -waveform", True),
+            ("PLL の倍率(または出力周波数)と出力ピン", "create_generated_clock -multiply_by/-divide_by",
+             all(x.get("pin") and (x.get("mult") or (hz(x.get("freq")) and self.fq.get(x.get("in")))) for x in self.plls) if self.plls else None),
+            ("分周・歯抜けの出力ピン", "create_generated_clock -divide_by", all(d.get("pin") for d in gen) if gen else None),
+            ("クロック切替の出力ピンと排他の種類", "create_generated_clock -add / set_clock_groups -physically_exclusive",
+             all(m.get("pin") for m in self.muxes) if self.muxes else None),
+            ("非同期のクロックの組", "set_clock_groups -asynchronous", True),
+            ("ジッタ・不確かさ", "set_clock_uncertainty", all(x.get("jitter") for x in self.plls + allsrc)),
+            ("ソースレイテンシ(外部・PLL の遅れ)", "set_clock_latency -source", True if any(x.get("latency") for x in allsrc + self.plls) else "任意(latency: を書けば反映)"),
+            ("テストモード端子と値", "set_case_analysis", bool(self.test.get("mode_pin")) if self.test else None),
+            ("テスト用クロックの周波数・端子", "create_clock(テストモード)", all(hz(t.get("freq")) and t.get("pin") for t in self.tsrcs) if self.test else None),
+            ("入出力の遅延(外部との境界)", "set_input_delay / set_output_delay", "範囲外(外部インタフェースの仕様から)"),
+        ]
+        return rows
+
+    def sdc(self, mode="func"):
+        """SDC の下書き。分からない所は <...> にして todo に積む"""
+        L, todo = [], []
+        def per(n):
+            v = hz(n.get("freq"))
+            return f"{1e9 / v:.4f}".rstrip("0").rstrip(".") if v else None
+        def obj(n, what, port=False):
+            if n.get("pin"):
+                return f'[get_{"ports" if port else "pins"} {{{n["pin"]}}}]'
+            todo.append(f'{self.lab(n["id"])}: {what}')
+            return f'[get_{"ports" if port else "pins"} {{<{n["id"]} の{"端子" if port else "ピン"}>}}]'
+        def defined(i):
+            n = self.node.get(i)
+            if n is None:
+                return False
+            if n["_k"] in ("src", "pll"):
+                return True
+            if n["_k"] == "dom":
+                return bool(divs(n)[0] != 1 or divs(n)[1] or gapr(n) or n.get("pin"))
+            return False
+        def master_of(i):
+            """i の位置にあるクロックの名前(定義されていなければ上流の定義済みクロック)"""
+            n = self.node.get(i)
+            while n is not None and not defined(n["id"]):
+                if n["_k"] == "mux":
+                    return f'{n["id"]}__{n.get("default") or (n.get("in") or [""])[0]}', n
+                n = self.node.get(self.parent(n))
+            return (n["id"], n) if n is not None else ("<不明>", None)
+        def src_obj(i):                                   # -source: 上流で定義されたクロックの点
+            nm, n = master_of(i)
+            if n is None:
+                return "<不明>"
+            port = n["_k"] == "src" and n.get("kind") in ("osc", "pad")
+            return obj(n, "端子名 pin" if port else "ピン名 pin", port=port)
+        title = "テストモード" if mode == "test" else "通常動作"
+        L += [f"# クロック制約の下書き({title}) — clocktree.py が diagram.yaml から生成。<...> は未決",
+              f"# チップ: {self.c.s.get('chip', {}).get('label', '')}", ""]
+        mp = self.test.get("mode_pin") if self.test else None
+        if self.test:
+            L.append(f"set_case_analysis {1 if mode == 'test' else 0} [get_ports {{{mp or '<テストモード端子>'}}}]")
+            if not mp:
+                todo.append("テストモード端子(clocks.test.mode_pin)")
+            for k, v in (self.test.get("case", {}) or {}).items() if mode == "test" else []:
+                L.append(f"set_case_analysis {v} [get_ports {{{k}}}]")
+            L.append("")
+        names = []
+        if mode == "test":
+            for t in self.tsrcs:
+                pr = per(t)
+                if not pr:
+                    todo.append(f'{self.lab(t["id"])}: 周波数')
+                L.append(f'create_clock -name {t["id"]} -period {pr or "<周期 ns>"} {obj(t, "端子名 pin", port=True)}')
+                names.append([t["id"]])
+            L += ["", "# テストモードでは各ドメインの TM がテスト用クロックを選ぶ(PLL・分周は通らない)"]
+            for d in self.doms:
+                tf = self.test_from(d)
+                L.append(f'#   {d["id"]}: ' + (f"{tf} を素通し" if tf else f'テスト用クロックなし({d.get("test_note", "理由未記入")})'))
+            if self.test.get("gate_note", True):
+                L.append("# クロックゲートはテスト時に TE=1 で開けたまま(ICG の TE 端子)")
+            L += ["", "# 機能クロックも定義する(テスト用なしのドメインはこれで動く。TM を通る経路は case_analysis で止まる)"]
+        if True:
+            for x in self.srcs:
+                pr = per(x)
+                if not pr:
+                    todo.append(f'{self.lab(x["id"])}: 周波数')
+                duty = float(x.get("duty", 50))
+                wf = f" -waveform {{0 {float(pr) * duty / 100:g}}}" if pr and duty != 50 else ""
+                L.append(f'create_clock -name {x["id"]} -period {pr or "<周期 ns>"}{wf} '
+                         f'{obj(x, "端子名 pin", port=x.get("kind", "osc") in ("osc", "pad"))}')
+            for pl in self.plls:
+                pf, v = self.fq.get(pl.get("in")), hz(pl.get("freq"))
+                if pl.get("mult"):
+                    m, dv = int(pl["mult"]), int(pl.get("refdiv", 1)) * int(pl.get("postdiv", 1))
+                elif pf and v:
+                    from fractions import Fraction
+                    fr = Fraction(v / pf).limit_denominator(1000)
+                    m, dv = fr.numerator, fr.denominator
+                else:
+                    m = dv = None
+                    todo.append(f'{self.lab(pl["id"])}: 倍率(mult)か入力・出力の周波数')
+                md = f"-multiply_by {m}" + (f" -divide_by {dv}" if dv and dv != 1 else "") if m else "-multiply_by <倍率>"
+                L.append(f'create_generated_clock -name {pl["id"]} -source {src_obj(pl.get("in"))} {md} {obj(pl, "出力ピン pin")}')
+            excl = []
+            for mx in self.muxes:
+                grp = []
+                for i in mx.get("in") or []:
+                    nm = f'{mx["id"]}__{i}'
+                    grp.append(nm)
+                    L.append(f'create_generated_clock -name {nm} -source {src_obj(i)} -divide_by 1 -master_clock {i} -add '
+                             f'{obj(mx, "出力ピン pin")}')
+                excl.append(grp)
+                L.append(f"set_clock_groups -physically_exclusive " + " ".join("-group {%s}" % g for g in grp)
+                         + f"   ;# {self.lab(mx['id'])}: 同時に出るのは 1 つ")
+            for d in self.doms:
+                p = d.get("from")
+                if not p:
+                    todo.append(f'{self.lab(d["id"])}: 源(from)')
+                    continue
+                dfl_, dvals_, dreg_ = divs(d)
+                dv = int(dfl_)
+                gp = gapr(d)
+                if dvals_:                                 # レジスタで選ぶ分周: 値ごとに定義し、同時には出ないので排他
+                    names_ = []
+                    for v in dvals_:
+                        nm = d["id"] if v == dfl_ else f'{d["id"]}__div{dtxt(v)}'
+                        names_.append(nm)
+                        L.append(f'create_generated_clock -name {nm} -source {src_obj(p)} -divide_by {dtxt(v)} '
+                                 f'-master_clock {master_of(p)[0]}{" -add" if v != dvals_[0] else ""} {obj(d, "分周の出力ピン pin")}'
+                                 f'{"   ;# 既定" if v == dfl_ else ""}')
+                    L.append(f'set_clock_groups -physically_exclusive ' + " ".join("-group {%s}" % x for x in names_)
+                             + f'   ;# {self.lab(d["id"])}: {dreg_ or "レジスタ"} で分周を選ぶ(同時には 1 つ)')
+                    if not dreg_:
+                        todo.append(f'{self.lab(d["id"])}: 分周を選ぶレジスタ名(div.reg)')
+                    self._divadd = getattr(self, "_divadd", {})
+                    self._divadd[d["id"]] = [x for x in names_ if x != d["id"]]
+                    continue
+                master = master_of(p)[0]
+                note = ""
+                if gp:
+                    note = (f"   ;# 歯抜け {gp[0]}/{gp[1]}: 平均 {fmt(self.fq.get(d['id']))}。パルスの間隔は元の周期のままなので "
+                            f"-divide_by {dv} で最短周期を見る")
+                if dv != 1 or gp or d.get("pin"):
+                    L.append(f'create_generated_clock -name {d["id"]} -source {src_obj(p)} -divide_by {dv} '
+                             f'-master_clock {master} {obj(d, "分周/歯抜けの出力ピン pin")}{note}')
+                else:
+                    L.append(f'# {d["id"]}: {master_of(p)[0]} と同じクロック(分周なし)。ゲート・バッファを通るだけなので新しいクロックは定義しない')
+            # 非同期の組: 源(PLL/源)ごと
+            grp = {}
+            def root_of(i):
+                return self.root.get(i) or i
+            for x in self.srcs:
+                grp.setdefault(x["id"], []).append(x["id"])
+            for pl in self.plls:
+                grp.setdefault(pl["id"], []).append(pl["id"])
+            for mx in self.muxes:
+                for i in mx.get("in") or []:
+                    grp.setdefault(root_of(i), []).append(f'{mx["id"]}__{i}')
+            for d in self.doms:
+                if d.get("from") and (divs(d)[0] != 1 or divs(d)[1] or gapr(d) or d.get("pin")):
+                    r = root_of(d["id"])
+                    pn = self.node.get(d["from"], {})
+                    if pn.get("_k") == "mux":
+                        r = root_of(pn.get("default") or (pn.get("in") or [None])[0])
+                    grp.setdefault(r, []).append(d["id"])
+                    grp[r] += getattr(self, "_divadd", {}).get(d["id"], [])
+            # PLL はその入力の源とは非同期とみなさない(位相関係あり)が、STA では別グループにするのが普通
+            if mode == "test":
+                for t in self.tsrcs:
+                    grp.setdefault(t["id"], []).append(t["id"])
+            gl = [v for v in grp.values() if v]
+            if len(gl) > 1:
+                L += ["", "# 源(PLL・発振器)が違うクロックどうしは非同期。CDC は同期化 FF / 非同期 FIFO で受ける前提",
+                      "set_clock_groups -asynchronous " + " ".join("-group {%s}" % " ".join(dict.fromkeys(v)) for v in gl)]
+            jit = [(x, x.get("jitter")) for x in self.srcs + self.plls if x.get("jitter")]
+            L.append("")
+            for x, j in jit:
+                L.append(f'set_clock_uncertainty -setup {j} [get_clocks {x["id"]}*]   ;# {self.lab(x["id"])} のジッタ(+マージンは別途)')
+            if not jit:
+                L.append("set_clock_uncertainty -setup <ジッタ+マージン> [all_clocks]")
+                todo.append("ジッタ・不確かさ(jitter)")
+        L += ["", "# 入出力の遅延(set_input_delay / set_output_delay)は外部インタフェースの仕様から別途"]
+        return "\n".join(L) + "\n", todo
 
 
 def build(c, title="クロック系統図"):
@@ -547,9 +921,23 @@ def main():
     os.makedirs(d, exist_ok=True)
     open(p, "w", encoding="utf-8").write(svg)
     open(os.path.join(d, "clock.md"), "w", encoding="utf-8").write(ct.md())
+    outs = [p]
+    if ct.test:
+        pt = p.replace(".svg", "_test.svg")
+        open(pt, "w", encoding="utf-8").write(ct.svg(f"クロック系統図(テストモード: {ct.test.get('mode_pin', 'テスト端子')}=1)", mode="test"))
+        outs.append(pt)
+    sf, todo = ct.sdc("func")
+    open(os.path.join(d, "clock.sdc"), "w", encoding="utf-8").write(sf)
+    if ct.test:
+        st, todo2 = ct.sdc("test")
+        open(os.path.join(d, "clock_test.sdc"), "w", encoding="utf-8").write(st)
+        todo += todo2
     if a.png:
-        to_png(p)
-    print(f"生成: {p} / clock.md")
+        for x in outs:
+            to_png(x)
+    print(f"生成: {', '.join(os.path.basename(x) for x in outs)} / clock.md / clock.sdc" + (" / clock_test.sdc" if ct.test else ""))
+    if todo:
+        print(f"  SDC の未決 {len(set(todo))} 件(clock.md の「SDC に必要な情報」)")
     for r in ct.cross:
         k = "CDC" if r["kind"] == "async" else f'同期 {r["ratio"]}'
         print(f'  {ct.lab(r["a"])} ↔ {ct.lab(r["b"])}: {k} ({", ".join(r["via"])})')

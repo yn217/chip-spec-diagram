@@ -47,6 +47,14 @@ clocks:                                 # クロック系統(clocktree.py)。clo
     - {id: core_clk, label: core, freq: 1GHz, from: pll_sys, div: 2, gate: sw, color: "#2563eb"}   # gate: true|sw|auto
     - {id: ipg, label: IPG, freq: 250MHz, from: core_clk, div: 4}         # 別ドメインから分周(比率同期になる)
     - {id: cpu, label: CPU, freq: 1.8GHz, from: cpu_sel, dvfs: [1.8GHz, 1.2GHz]}
+    - {id: vpu, label: VPU, freq: 800MHz, from: pll2, gap: 4/5}            # 歯抜け(5 周期のうち 4 個残す)
+    - {id: per, label: PER, freq: 100MHz, from: pll_sys, div: {values: [10, 20, 40], default: 20, reg: "CLK_DIV[1:0]"}}  # レジスタで切替
+    # SDC 用(任意): pin(端子・ピン名)/ jitter: 25ps / duty: 50 / latency
+  test:                                 # テストモード: mode_pin=1 で外部のテスト用クロックを素通し
+    mode_pin: TEST_MODE
+    case: {SCAN_EN: 0}
+    default: scan_clk                   # ドメインごとに test_from で上書き。none + test_note で対象外
+    sources: [{id: scan_clk, label: SCAN_CLK, freq: 100MHz, kind: pad, pin: SCAN_CLK}]
 blocks:
   - id: npu
     label: NPU                          # 16字以内
