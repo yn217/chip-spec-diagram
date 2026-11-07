@@ -162,6 +162,28 @@ blocks:
 - `path` の要素: `ブロック.ポート` / パッドID / バスID(バス上を通る)/ ブロックID(中心)。`chipdiag.py anchors` で一覧。
 - YAMLの値に `? : # [ ]` を含む時は `"..."` で囲む。
 
+### resets(リセット系統図: `scripts/resettree.py`)
+```yaml
+resets:
+  default: rst_sys                       # reset_domain のないブロック・バスの所属
+  sources:
+    - {id: por,   label: POR,   kind: por}                 # por | bod | pad | wdt | sw | dbg
+    - {id: rst_n, label: RST_N, kind: pad, polarity: low}  # pad = チップ外から端子経由
+  domains:
+    - id: rst_sys
+      label: system
+      sources: [por, rst_n]              # どれかでリセット(OR)
+      clock_domain: core_clk             # 解除を同期させるクロック(clocks.domains)
+      sync: 2                            # 同期化の段数
+      stretch: 16                        # 伸長サイクル
+      wait: [pll_sys]                    # 解除前に待つ PLL ロック(clocks.plls)
+      after: []                          # 先に解除されるドメイン
+      isolation: false                   # 単独リセット時の切り離し/静止化
+      signal: rst_sys_n                  # 省略時 <id>_n
+blocks:
+  - {id: npu, reset_domain: rst_npu, ...}   # 子ブロック・付属ブロックは親を継ぐ
+```
+
 ### storyboard(動作説明のコマ割り)
 `scenario.steps` または `latency.accesses` を 1 ステップ 1 コマで並べる(`scripts/storyboard.py`)。
 ```yaml

@@ -369,6 +369,41 @@ items:
     assume: 仮置きで進める
     priority: 38
     modes: [concept, rtl, mixed]
+  - id: reset_sources
+    category: リセット系統
+    q: リセット源は？(POR・外部リセット端子・ウォッチドッグ・ソフトウェアリセット・デバッガ・PCIe PERST# など)
+    free: true
+    options:
+      - {label: 仕様書/RTLから読む, description: リセット制御(SRC)の仕様やリセット端子を指定}
+      - {label: 仮置きで進める, description: POR・RST_N・WDT の 3 つで仮置き}
+    effect: リセット系統図の左の列、ドメインごとの OR の入力
+    assume: 仮置きで進める
+    priority: 37
+    modes: [concept, rtl, mixed]
+  - id: reset_domains
+    category: リセット系統
+    q: リセットドメインの分け方は？単独でリセットしたいサブシステム(CPU・GPU・PCIe など)と、その時にバスを切り離す仕組み(アイソレーション/静止化)はありますか？
+    free: true
+    options:
+      - {label: クロックドメインと同じ単位, description: クロックごとに 1 ドメイン}
+      - {label: 全体で 1 つ, description: 単独リセットなし}
+      - {label: 仮置きで進める, description: クロックドメイン単位、単独リセットなしで仮置き}
+    effect: リセットドメインの枠、RDC(リセットをまたぐ接続)のチェック
+    assume: 仮置きで進める
+    priority: 37
+    modes: [concept, rtl, mixed]
+  - id: reset_sequence
+    category: リセット系統
+    q: 解除の順番は？(PLL ロック待ち・伸長サイクル・先に解除するドメイン)。解除の同期化は何段ですか？
+    free: true
+    options:
+      - {label: 決まっている, description: 順番と待ち条件を入力}
+      - {label: 仮置きで進める, description: PLL ロック → system → その他、同期 2 段}
+    effect: 解除シーケンスの波形、[PLL] [同期] [順序] のチェック
+    assume: 仮置きで進める
+    priority: 36
+    modes: [concept, rtl, mixed]
+    depends_on: [reset_domains]
   - id: bandwidth
     category: 帯域
     q: 外部IF・主要経路の帯域(規格・レーン数・メモリ幅)は？

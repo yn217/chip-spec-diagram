@@ -1,6 +1,6 @@
 ---
 name: chip-spec-diagram
-description: 半導体チップの仕様書に載せる図を作るハーネス。バス構成図(アーキテクチャ)・メモリマップ・ブロック間の接続図(端子の入出力・幅)・クロック系統図・動作のストーリーボード(レイテンシ目安)・フロアプラン・ボード配置。仕様が未決なら質問して決定事項を増やしながら仮置きで描き進め、RTLがあれば解析して図を起こす。Use for chip/SoC block diagrams, bus architecture, memory maps, block interface/connection diagrams, clock trees, storyboards, floorplans, RTL-to-diagram, draw.io export.
+description: 半導体チップの仕様書に載せる図を作るハーネス。バス構成図(アーキテクチャ)・メモリマップ・ブロック間の接続図(端子の入出力・幅)・クロック系統図・リセット系統図・動作のストーリーボード(レイテンシ目安)・フロアプラン・ボード配置。仕様が未決なら質問して決定事項を増やしながら仮置きで描き進め、RTLがあれば解析して図を起こす。Use for chip/SoC block diagrams, bus architecture, memory maps, block interface/connection diagrams, clock trees, reset trees, storyboards, floorplans, RTL-to-diagram, draw.io export.
 ---
 
 # chip-spec-diagram — 仕様書用の図を「質問しながら育てる」ハーネス
@@ -55,7 +55,7 @@ description: 半導体チップの仕様書に載せる図を作るハーネス�
 | 動作のストーリーボード(ステップ・レイテンシ目安) | 使える(バス構成図を使い回してコマを並べる) | `diagrams/storyboard/GUIDE.md` | `storyboard.py`(`chipdiag.py` `latency.py`) |
 | クロック系統図(源→PLL→分周/ゲート→ドメイン、CDC 一覧) | 使える(改善予定) | `diagrams/bus-architecture/GUIDE.md` の G3.5 | `clocktree.py` |
 | フロアプラン・ボード配置 | 使える | `diagrams/bus-architecture/GUIDE.md` の G4 | `floorplan.py` `board.py` |
-| リセット系統図 | 予定 | — | — |
+| リセット系統図(源→OR→同期化→ドメイン、解除シーケンス、RDC) | 使える | `diagrams/reset-tree/GUIDE.md` | `resettree.py` |
 | ゲートレベル図 | 予定 | — | — |
 
 ユーザが図の種類を言わなければ、G0 で目的と一緒に聞く。1つの仕様(`diagram.yaml`)から複数の図を描けるものは、名前・クロック・幅を共通にして図どうしで数字をずらさない。

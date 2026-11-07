@@ -165,6 +165,15 @@ def build(spec_path, out, decisions=None, floorplan=None, board=None):
             tr = "".join(f"<tr><td>{esc(a)}</td><td>{esc(b)}</td><td>{esc(', '.join(v))}</td></tr>" for a, b, v in table)
             parts.append(f"<h2>クロック系統図</h2><div class='frame'>{svg_ck}</div>"
                          f"<div class='tw'><table><tr><th>ドメイン</th><th>ドメイン</th><th>非同期の乗り換え(CDC)</th></tr>{tr}</table></div>")
+    if spec.get("resets", {}).get("domains"):
+        import resettree
+        svg_rt, rt, md_rt = resettree.build(c)
+        if svg_rt:
+            tr = "".join(f"<tr><td>{esc(rt.dl(r['a']))}</td><td>{esc(rt.dl(r['b']))}</td><td>{esc(', '.join(r['via']))}</td>"
+                         f"<td>{'切り離しあり' if r['ok'] else '要対策'}</td></tr>" for r in rt.rdc)
+            parts.append(f"<h2>リセット系統図</h2><div class='frame'>{svg_rt}</div>"
+                         + (f"<div class='tw'><table><tr><th>ドメイン</th><th>ドメイン</th><th>リセットをまたぐ接続(RDC)</th><th>対策</th></tr>{tr}</table></div>" if tr else "")
+                         + (f"<div class='warn'>{esc(chr(10).join(rt.warn))}</div>" if rt.warn else ""))
     if floorplan:
         from floorplan import FP
         fspec = yaml.safe_load(open(floorplan, encoding="utf-8"))

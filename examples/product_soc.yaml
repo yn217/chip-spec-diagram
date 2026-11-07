@@ -97,6 +97,7 @@ buses:
   # ---- RT MCU グループ(リアルタイム制御) ----
   - id: rt
     label: RT Bus (MCU)
+    reset_domain: rst_rt
     color: "#16a34a"
     owner: m7
     width: 64
@@ -111,6 +112,7 @@ buses:
   # ---- Audio DSP グループ(オーディオ) ----
   - id: aud
     label: Audio Bus (DSP)
+    reset_domain: rst_aud
     color: "#7c3aed"
     owner: dsp
     width: 64
@@ -138,19 +140,21 @@ blocks:
   # ---- CPU グループ ----
   - id: a53
     label: CPU Core
+    reset_domain: rst_cpu
     count: 4
     cpu: true
     clock_domain: a53
     attached:              # コアの枠に引っ付けて描く L1(コアごと)
       - {id: l1i, label: I$, sub: 32KB, kind: memory, ports: [{id: m, role: M, width: 128}]}
       - {id: l1d, label: D$, sub: 32KB, kind: memory, ports: [{id: m, role: M, width: 128}]}
-  - {id: l2, label: L2$, sub: 512KB, kind: memory, place: N, clock_domain: a53,
+  - {id: l2, reset_domain: rst_cpu, label: L2$, sub: 512KB, kind: memory, place: N, clock_domain: a53,
      ports: [{id: i, role: S}, {id: d, role: S}, {id: ace, role: M, width: 128}]}
-  - {id: npu, label: NPU, sub: 2.3 TOPS, place: N, clock_domain: ml, ports: [{id: m, role: M, width: 128}, {id: s, role: S, width: 32}]}
-  - {id: gpu3d, label: GPU 3D, sub: 3D, place: N, clock_domain: gpu, ports: [{id: m, role: M, width: 128}, {id: s, role: S, width: 32}]}
-  - {id: gpu2d, label: GPU 2D, sub: 2D, place: N, clock_domain: gpu, ports: [{id: m, role: M, width: 64}, {id: s, role: S, width: 32}]}
+  - {id: npu, reset_domain: rst_ml, label: NPU, sub: 2.3 TOPS, place: N, clock_domain: ml, ports: [{id: m, role: M, width: 128}, {id: s, role: S, width: 32}]}
+  - {id: gpu3d, reset_domain: rst_gpu, label: GPU 3D, sub: 3D, place: N, clock_domain: gpu, ports: [{id: m, role: M, width: 128}, {id: s, role: S, width: 32}]}
+  - {id: gpu2d, reset_domain: rst_gpu, label: GPU 2D, sub: 2D, place: N, clock_domain: gpu, ports: [{id: m, role: M, width: 64}, {id: s, role: S, width: 32}]}
   - id: vpu
     label: VPU
+    reset_domain: rst_vpu
     place: N
     clock_domain: vpu
     ports: [{id: m, role: M, width: 128}, {id: s, role: S, width: 32}]
@@ -180,9 +184,9 @@ blocks:
       - {id: pcie, label: PCIe Gen3 x1}
   - {id: rom, label: Boot ROM, sub: 256KB, kind: memory, clock_domain: noc, ports: [{id: s, role: S}]}
   - {id: ocram, label: On-chip RAM, sub: 512KB, kind: memory, clock_domain: noc, ports: [{id: s, role: S}]}
-  - {id: gic, label: Int Ctrl, clock_domain: a53, ports: [{id: s, role: S, width: 64}]}
+  - {id: gic, reset_domain: rst_cpu, label: Int Ctrl, clock_domain: a53, ports: [{id: s, role: S, width: 64}]}
   - {id: pciew, label: PCIe Window, sub: 128MB, clock_domain: hsio, ports: [{id: s, role: S}]}
-  - {id: ddrc, label: DDR Ctrl, sub: Inline ECC, clock_domain: ddr, latency: {read: 40, write: 12}, ports: [{id: s, role: S, width: 128}, {id: phy, dir: inout}]}
+  - {id: ddrc, reset_domain: rst_ddr, label: DDR Ctrl, sub: Inline ECC, clock_domain: ddr, latency: {read: 40, write: 12}, ports: [{id: s, role: S, width: 128}, {id: phy, dir: inout}]}
   - {id: ddrcfg, label: DDRC Regs, clock_domain: ipg, ports: [{id: s, role: S, width: 32}]}
   - id: conn
     label: Connectivity
@@ -252,16 +256,17 @@ blocks:
   - {id: i2c56, label: I2C5-6, count: 2, owner: a53, clock_domain: ipg, ports: [{id: s, role: S}]}
 
   # ---- RT MCU グループ ----
-  - {id: m7, label: RT MCU, sub: TCM 256KB, cpu: true, clock_domain: m7, ports: [{id: m, role: M, width: 64}]}
-  - {id: can, label: CAN-FD, count: 2, owner: m7, clock_domain: rt, ports: [{id: s, role: S}]}
-  - {id: pwm, label: PWM, count: 4, owner: m7, clock_domain: rt, ports: [{id: s, role: S}]}
-  - {id: gpt46, label: Timer4-6, count: 3, owner: m7, clock_domain: rt, ports: [{id: s, role: S}]}
-  - {id: syscnt, label: Sys Counter, owner: m7, clock_domain: rt, ports: [{id: s, role: S}]}
+  - {id: m7, reset_domain: rst_rt, label: RT MCU, sub: TCM 256KB, cpu: true, clock_domain: m7, ports: [{id: m, role: M, width: 64}]}
+  - {id: can, reset_domain: rst_rt, label: CAN-FD, count: 2, owner: m7, clock_domain: rt, ports: [{id: s, role: S}]}
+  - {id: pwm, reset_domain: rst_rt, label: PWM, count: 4, owner: m7, clock_domain: rt, ports: [{id: s, role: S}]}
+  - {id: gpt46, reset_domain: rst_rt, label: Timer4-6, count: 3, owner: m7, clock_domain: rt, ports: [{id: s, role: S}]}
+  - {id: syscnt, reset_domain: rst_rt, label: Sys Counter, owner: m7, clock_domain: rt, ports: [{id: s, role: S}]}
 
   # ---- Audio DSP グループ ----
-  - {id: dsp, label: Audio DSP, cpu: true, clock_domain: dsp, ports: [{id: m, role: M, width: 64}, {id: s, role: S, width: 32}]}
+  - {id: dsp, reset_domain: rst_aud, label: Audio DSP, cpu: true, clock_domain: dsp, ports: [{id: m, role: M, width: 64}, {id: s, role: S, width: 32}]}
   - id: audio
     label: Audio Periph
+    reset_domain: rst_aud
     pack: true
     owner: dsp
     clock_domain: aud
@@ -294,3 +299,22 @@ links:
   - {from: cam.p, to: pad_csi, dir: fwd}
   - {from: media.dout, to: pad_disp}
   - {from: pad_disp, to: disp.p, dir: fwd}
+resets:
+  default: rst_sys
+  sources:
+  - {id: por, label: POR, kind: por}
+  - {id: rst_n, label: RST_N, kind: pad, polarity: low}
+  - {id: wdt, label: WDT タイムアウト, kind: wdt}
+  - {id: sw_cpu, label: SW リセット(CPU), kind: sw}
+  - {id: sw_mm, label: SW リセット(GPU/VPU/ML), kind: sw}
+  - {id: dbg, label: デバッガ, kind: dbg}
+  domains:
+  - {id: rst_sys, label: system(NoC・周辺), sources: [por, rst_n, wdt], clock_domain: noc, stretch: 32, wait: [sys_pll]}
+  - {id: rst_cpu, label: CPU, sources: [por, rst_n, wdt, sw_cpu, dbg], clock_domain: a53, wait: [arm_pll], after: [rst_sys],
+     isolation: true}
+  - {id: rst_ddr, label: DDR, sources: [por, rst_n, wdt], clock_domain: ddr, stretch: 8, wait: [dram_pll], after: [rst_sys]}
+  - {id: rst_gpu, label: GPU, sources: [por, rst_n, wdt, sw_mm], clock_domain: gpu, after: [rst_ddr], isolation: true}
+  - {id: rst_vpu, label: VPU, sources: [por, rst_n, wdt, sw_mm], clock_domain: vpu, after: [rst_ddr], isolation: true}
+  - {id: rst_ml, label: ML, sources: [por, rst_n, wdt, sw_mm], clock_domain: ml, after: [rst_ddr], isolation: true}
+  - {id: rst_rt, label: RT(MCU), sources: [por, rst_n], clock_domain: rt, after: [rst_sys], isolation: true}
+  - {id: rst_aud, label: Audio, sources: [por, rst_n, wdt], clock_domain: aud, after: [rst_sys]}

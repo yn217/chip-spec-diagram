@@ -14,7 +14,8 @@
 | ブロック間の接続図(中心のブロックと接続元・接続先、端子の入出力・幅) | `diagrams/block-interface/GUIDE.md` | `examples/interface_npu.yaml` |
 | 動作のストーリーボード(ステップ・レイテンシ目安) | `diagrams/storyboard/GUIDE.md` | `examples/npu_soc.yaml` `examples/latency_demo.yaml` |
 | クロック系統図・フロアプラン・ボード配置 | バス構成図の G3.5/G4 | `examples/npu_soc.yaml` `examples/floorplan.yaml` `examples/board.yaml` |
-| リセット系統図・ゲートレベル図 | 予定 | — |
+| リセット系統図(解除シーケンス・RDC) | `diagrams/reset-tree/GUIDE.md` | `examples/npu_soc.yaml` `examples/product_soc.yaml` |
+| ゲートレベル図 | 予定 | — |
 
 `SKILL.md` は共通の手順(質問して決定事項を増やす・ルールの台帳・出す前の検査)と、図の種類ごとの手順への案内です。
 
@@ -40,6 +41,7 @@
 | `clocktree.py` | クロック系統図（源→PLL→分周/ゲート→ドメイン、CDC一覧） |
 | `rules.py` | 作図ルール台帳（指摘をルールとして追加、出す前のチェックリスト、自動化されていないルールの一覧） |
 | `board.py` | ボード配置とIOの辺の推奨、論理図・フロアプランとの突き合わせ |
+| `resettree.py` | リセット系統図(源・OR・同期化・ドメイン・解除シーケンス・RDC のチェック) |
 | `storyboard.py` | 動作説明のストーリーボード(構成図を使い回し、ステップごとのコマを 1 枚に並べる) |
 | `ifdiag.py` | ブロック間の接続図(YAML または RTL から。AXI/APB の束ね、lint、SVG/PNG/draw.io) |
 | `memmap.py` `reach.py` `addrmap.py` | メモリマップの図と表、マスタごとの到達性・ループの検査 |

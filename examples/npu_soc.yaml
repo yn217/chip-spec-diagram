@@ -49,6 +49,7 @@ blocks:
 - id: pcie
   label: PCIe Ctrl
   clock_domain: pcie_clk
+  reset_domain: rst_pcie
   rect: [170, 295, 120, 100]
   ports:
   - {id: phy, side: W, dir: inout}
@@ -79,6 +80,7 @@ blocks:
 - id: npu
   label: NPU Cluster
   clock_domain: npu_clk
+  reset_domain: rst_npu
   rect: [380, 500, 380, 240]
   ports:
   - {id: axi_m, side: N, at: 0.25, role: M, name: axi_m}
@@ -111,6 +113,7 @@ blocks:
 - id: ddrc
   label: DDR Ctrl
   clock_domain: ddr_clk
+  reset_domain: rst_ddr
   rect: [820, 520, 140, 90]
   ports:
   - {id: axi_s, side: N, at: 0.4, role: S}
@@ -118,6 +121,7 @@ blocks:
 - id: eth
   label: Ethernet
   clock_domain: eth_clk
+  reset_domain: rst_eth
   rect: [1030, 295, 110, 100]
   ports:
   - {id: axi_m, side: W, at: 0.3, role: M}
@@ -207,3 +211,21 @@ clocks:
   - {id: ddr_clk, label: ddr, freq: 800MHz, from: pll_ddr, div: 2, color: '#ea580c'}
   - {id: pcie_clk, label: pcie, freq: 250MHz, from: pll_pcie, div: 2, color: '#db2777'}
   - {id: eth_clk, label: eth, freq: 156.25MHz, from: eth_ref, color: '#0891b2'}
+resets:
+  default: rst_sys                # reset_domain のないブロック・バスは system ドメイン
+  sources:
+  - {id: por, label: POR, kind: por}
+  - {id: rst_n, label: RST_N, kind: pad, polarity: low}
+  - {id: perst, label: PCIe PERST#, kind: pad, polarity: low}
+  - {id: wdt, label: WDT タイムアウト, kind: wdt}
+  - {id: sw_npu, label: SW リセット(NPU), kind: sw}
+  - {id: sw_eth, label: SW リセット(ETH), kind: sw}
+  domains:
+  - {id: rst_sys, label: system, sources: [por, rst_n, wdt], clock_domain: core_clk, sync: 2, stretch: 16, wait: [pll_sys]}
+  - {id: rst_ddr, label: ddr, sources: [por, rst_n, wdt], clock_domain: ddr_clk, sync: 2, stretch: 8, wait: [pll_ddr], after: [rst_sys]}
+  - {id: rst_npu, label: npu, sources: [por, rst_n, wdt, sw_npu], clock_domain: npu_clk, sync: 2, wait: [pll_npu],
+     after: [rst_sys], isolation: true}
+  - {id: rst_pcie, label: pcie, sources: [por, perst], clock_domain: pcie_clk, sync: 2, wait: [pll_pcie], after: [rst_sys],
+     isolation: true}
+  - {id: rst_eth, label: eth, sources: [por, rst_n, wdt, sw_eth], clock_domain: eth_clk, sync: 2, after: [rst_sys],
+     isolation: true}
