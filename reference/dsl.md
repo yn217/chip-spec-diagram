@@ -170,6 +170,7 @@ blocks:
 ```yaml
 resets:
   default: rst_sys                       # reset_domain のないブロック・バスの所属
+  controller: {always_on: true}          # リセット制御の置き場所(always_on / domain: / block:)。自己リセットの確認に使う
   sources:
     - {id: por,   label: POR,   kind: por}                 # por | bod | pad | wdt | sw | dbg
     - {id: rst_n, label: RST_N, kind: pad, polarity: low}  # pad = チップ外から端子経由

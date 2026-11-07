@@ -27,7 +27,9 @@ diagram.yaml の resets: を使う
 
 チェック(lint):
   [リセット未割当] [未定義] [順序](after の循環) [同期](段数 < 2) [PLL](PLL 由来のクロックなのにロック待ちがない)
-  [リセット発行](同期リセットなのに発行クロックが未決) [自己リセット](発行元が自分のドメインをリセットするのに伸長がない)
+  [リセット発行](同期リセットなのに発行クロックが未決)
+  [自己リセット] 発行元が自分のドメインをリセットするのに伸長がない(直接)/ 同期の源がリセット制御の入っているドメインを
+                リセットする(間接: 制御の伸長・シーケンスごと消える)。resets.controller: {always_on: true | domain: | block: }
   [RDC] 片側だけが単独でリセットされうる接続(相手が動いている時に X/グリッチが届く)。isolation: true なら対策ありとして表示のみ
 """
 import os, sys, argparse
@@ -51,6 +53,7 @@ class ResetTree:
         self.srcs = r.get("sources", [])
         self.doms = r.get("domains", [])
         self.default = r.get("default")
+        self.ctl = r.get("controller") or {}       # リセット制御の置き場所 {always_on: true} / {domain: rst_x} / {block: id}
         self.warn, self.info = [], []
         self.sid = {s["id"]: s for s in self.srcs}
         self.did = {d["id"]: d for d in self.doms}
@@ -166,6 +169,20 @@ class ResetTree:
                     if d["id"] == own and x["id"] in d.get("sources", []) and not d.get("stretch"):
                         self.warn.append(f"[自己リセット] {lab}: 発行元 {frm} は {self.dl(own)} に入っていて、そのドメインを自分でリセットする。"
                                          f"発行元も途中でリセットされるので、リセット制御でパルスを保持する(stretch を書く)")
+        # リセット制御そのものがリセットされる(間接の自己リセット): 伸長のカウンタや保持も消える
+        cdom = self.ctl.get("domain") or (self.dom_of_block(self.ctl["block"]) if self.ctl.get("block") in self.c.blocks else None)
+        if self.ctl.get("block") and self.ctl["block"] not in self.c.blocks:
+            self.warn.append(f"[未定義] resets.controller.block {self.ctl['block']} がブロックにない")
+        if cdom and cdom not in self.did:
+            self.warn.append(f"[未定義] resets.controller.domain {cdom} が resets.domains にない")
+        if not self.ctl:
+            self.info.append("[info] リセット制御の置き場所(resets.controller)が未決。常時オン(POR だけでリセット)なら always_on: true")
+        elif cdom in self.did:
+            for x in self.srcs:
+                typ, _, frm = self.src_info(x)
+                if typ == "sync" and x["id"] in self.did[cdom].get("sources", []):
+                    self.warn.append(f"[自己リセット] {x.get('label', x['id'])}: リセット制御が入っている {self.dl(cdom)} をリセットする。"
+                                     f"制御自身もリセットされ、伸長やシーケンスが途中で消える。制御を常時オンに置くか、この源から外す")
         for d in self.doms:
             st = d.get("style", "async")
             if st not in ("async", "sync"):
@@ -259,6 +276,31 @@ class ResetTree:
                                      f"({', '.join(sorted(via))})。バスの切り離し/静止化を入れるか isolation: true")
         return out
 
+    def ctl_label(self):
+        if self.ctl.get("always_on"):
+            return "(常時オン)"
+        if self.ctl.get("domain"):
+            return f'({self.dl(self.ctl["domain"]) if self.ctl["domain"] in self.did else self.ctl["domain"]})'
+        if self.ctl.get("block"):
+            b = self.c.blocks.get(self.ctl["block"], {})
+            return f'({b.get("label", self.ctl["block"])})'
+        return "(置き場所 未決)"
+
+    def rdc_text(self):
+        """RDC の説明と一覧(図の右下の枠と reset.md で共通)"""
+        head = ["RDC(Reset Domain Crossing)= リセットドメインをまたぐ信号",
+                "送り側だけがリセットされると、出力が途中で変わる。動いている受け側に X・グリッチ・途中で切れた転送が届き、"
+                "誤動作やバスの停止につながる(クロックが同じでも起きる。CDC とは別の問題)。",
+                "対策: 送り側をリセットする前にバスを静止化する(新しい転送を止め、残りの完了を待つ)/ 境界で切り離す"
+                "(アイソレーション: 出力を既定値に固定)/ 受け側で取り込みを止める。",
+                "図: 赤破線 = 対策なし(要対策)、緑破線 = 切り離しあり(isolation: true)。数字は経路の数。"]
+        rows = []
+        for r in self.rdc:
+            al = "、".join(f'{self.dl(a)} が {"・".join(self.sid.get(x, {}).get("label", x) for x in only)} で単独リセット'
+                          for a, only in r["alone"])
+            rows.append((r["ok"], f'{self.dl(r["a"])} ↔ {self.dl(r["b"])}: {al}({", ".join(r["via"])})'))
+        return head, rows
+
     def dl(self, i):
         return self.did[i].get("label", i)
 
@@ -341,8 +383,28 @@ class ResetTree:
         wav_rows = [("src", x) for x in srcs if x.get("kind") in ("por", "pad")] + \
                    [("pll", p) for p in sorted({p for d in doms for p in d.get("wait", []) if p in self.plls})] + \
                    [("dom", d) for d in doms]
-        H = WV_Y + 40 + len(wav_rows) * 30 + 60
-        W = max(W, 980)
+        SW_ = 140
+        X0w = 230
+        PX = X0w + (nst + 1) * SW_ + 50                  # RDC の説明の枠
+        PW = 600
+        def wrapw(t, wmax, k=5.7):
+            out, cur = [], ""
+            for ch in t:
+                if cur and wlen(cur + ch) * k > wmax:
+                    out.append(cur); cur = ""
+                cur += ch
+            out.append(cur)
+            return out
+        head, rrows = self.rdc_text()
+        plines = [("h", head[0])] + [("p", t) for x in head[1:] for t in wrapw(x, PW - 28)]
+        rl = []
+        for ok, x in rrows:
+            for j, t in enumerate(wrapw(x, PW - 44)):
+                rl.append((("ok" if ok else "ng") if j == 0 else "c", t))
+        plines += [("s", "この図の RDC")] + (rl or [("p", "なし")])
+        PH = 24 + len(plines) * 17 + 10
+        H = WV_Y + 40 + max(len(wav_rows) * 30, PH) + 60
+        W = max(W, 980, PX + PW + 20)
 
         o.append(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {f(W)} {f(H)}" font-family="\'Noto Sans JP\',sans-serif">'
                  f'<rect width="100%" height="100%" fill="#fff"/>'
@@ -356,7 +418,7 @@ class ResetTree:
         # リセット制御の枠
         o.append(f'<rect x="{f(X_CTL)}" y="{f(ROW0 - 22)}" width="{f(X_SY - 18 - X_CTL)}" height="{f(ctl_bot - ROW0 + 18)}" rx="5" '
                  f'fill="#f8fafc" stroke="#475569" stroke-width="1.5" stroke-dasharray="6 3"/><text x="{f(X_CTL + 8)}" '
-                 f'y="{f(ROW0 - 8)}" font-size="11.5" font-weight="800" fill="#475569">リセット制御</text>')
+                 f'y="{f(ROW0 - 8)}" font-size="11.5" font-weight="800" fill="#475569">リセット制御{esc(self.ctl_label())}</text>')
         o.append("<!--LINES-->")
         # 枝(列 → OR)
         sidx = {x["id"]: i for i, x in enumerate(srcs)}
@@ -492,8 +554,25 @@ class ResetTree:
                      f'<text x="{f(lx)}" y="{f(my + 4)}" font-size="10" font-weight="800" fill="{colr}" text-anchor="middle">{tag}</text>')
         # 解除シーケンス(負論理: L = リセット中、H = 解除)
         o.append(f'<text x="12" y="{f(WV_Y)}" font-size="14" font-weight="800" fill="{INK}">解除シーケンス</text>')
-        LX, X0 = 24, 230
-        SW_ = max(110, min(180, (W - X0 - 60) / (nst + 1)))
+        LX, X0 = 24, X0w
+        py = WV_Y - 4
+        o.append(f'<rect x="{f(PX)}" y="{f(py)}" width="{PW}" height="{f(PH)}" rx="6" fill="#f8fafc" stroke="#cbd5e1"/>')
+        yy = py + 20
+        for kd, t in plines:
+            if kd == "h":
+                o.append(f'<text x="{f(PX + 14)}" y="{f(yy)}" font-size="12.5" font-weight="800" fill="{INK}">{esc(t)}</text>')
+            elif kd == "s":
+                yy += 4
+                o.append(f'<text x="{f(PX + 14)}" y="{f(yy)}" font-size="11.5" font-weight="800" fill="{INK}">{esc(t)}</text>')
+            elif kd == "c":
+                o.append(f'<text x="{f(PX + 30)}" y="{f(yy)}" font-size="10.5" fill="{INK}">{esc(t)}</text>')
+            elif kd in ("ok", "ng"):
+                colr = OK_C if kd == "ok" else RDC_C
+                o.append(f'<text x="{f(PX + 30)}" y="{f(yy)}" font-size="10.5" fill="{INK}">{esc(t)}</text>')
+                o.append(f'<line x1="{f(PX + 14)}" y1="{f(yy - 4)}" x2="{f(PX + 24)}" y2="{f(yy - 4)}" stroke="{colr}" stroke-width="2.4"/>')
+            else:
+                o.append(f'<text x="{f(PX + 14)}" y="{f(yy)}" font-size="10.5" fill="#334155">{esc(t)}</text>')
+            yy += 17
         tops = WV_Y + 26
         for j in range(nst + 2):
             xx = X0 + j * SW_
@@ -538,7 +617,8 @@ class ResetTree:
             pre = [self.dl(a) for a in d.get("after", [])] + [self.plls.get(p, {}).get("label", p) + " ロック" for p in d.get("wait", [])]
             L.append(f'{self.rank.get(d["id"], 1)}. {d.get("label", d["id"])}' + (f'(待つ: {", ".join(pre)})' if pre else "")
                      + (f' 伸長 {d["stretch"]}cyc' if d.get("stretch") else ""))
-        L += ["", "## リセットドメインの乗り換え(RDC)", ""]
+        head, _ = self.rdc_text()
+        L += ["", "## リセットドメインの乗り換え(RDC)", "", f"**{head[0]}**", ""] + [x for x in head[1:]] + [""]
         if not self.rdc:
             L.append("なし")
         for r in self.rdc:

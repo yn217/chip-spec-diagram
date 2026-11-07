@@ -212,6 +212,7 @@ clocks:
   - {id: pcie_clk, label: pcie, freq: 250MHz, from: pll_pcie, div: 2, color: '#db2777'}
   - {id: eth_clk, label: eth, freq: 156.25MHz, from: eth_ref, color: '#0891b2'}
 resets:
+  controller: {always_on: true}   # リセット制御は常時オン(POR だけでリセット)
   default: rst_sys                # reset_domain のないブロック・バスは system ドメイン
   sources:
   - {id: por, label: POR, kind: por, type: async}

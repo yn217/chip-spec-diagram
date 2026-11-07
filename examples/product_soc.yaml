@@ -304,6 +304,7 @@ links:
   - {from: media.dout, to: pad_disp}
   - {from: pad_disp, to: disp.p, dir: fwd}
 resets:
+  controller: {always_on: true}   # リセット制御は常時オン(POR だけでリセット)
   default: rst_sys
   sources:
   - {id: por, label: POR, kind: por, type: async}
