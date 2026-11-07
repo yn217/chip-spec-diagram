@@ -16,7 +16,7 @@
 | クロック系統図(MUX・分周・ゲート・DVFS、CDC と比率同期) | `diagrams/clock-tree/GUIDE.md` | `examples/product_soc.yaml` `examples/npu_soc.yaml` |
 | フロアプラン・ボード配置 | バス構成図の G4 | `examples/floorplan.yaml` `examples/board.yaml` |
 | リセット系統図(解除シーケンス・RDC) | `diagrams/reset-tree/GUIDE.md` | `examples/npu_soc.yaml` `examples/product_soc.yaml` |
-| ゲートレベル図 | 予定 | — |
+| ゲートレベル図(リセット同期化・クロック切替・ICG など) | `diagrams/gate-level/GUIDE.md` | `examples/gate/*.yaml` |
 
 `SKILL.md` は共通の手順(質問して決定事項を増やす・ルールの台帳・出す前の検査)と、図の種類ごとの手順への案内です。
 
@@ -43,6 +43,7 @@
 | `rules.py` | 作図ルール台帳（指摘をルールとして追加、出す前のチェックリスト、自動化されていないルールの一覧） |
 | `board.py` | ボード配置とIOの辺の推奨、論理図・フロアプランとの突き合わせ |
 | `resettree.py` | リセット系統図(源・OR・同期化・ドメイン・解除シーケンス・RDC のチェック) |
+| `gatediag.py` | ゲートレベル図(標準記号で自動配置・配線、構造記述ネットリストの読み込み、未接続・ループ・ゲーテッドクロック・CDC のチェック) |
 | `storyboard.py` | 動作説明のストーリーボード(構成図を使い回し、ステップごとのコマを 1 枚に並べる) |
 | `ifdiag.py` | ブロック間の接続図(YAML または RTL から。AXI/APB の束ね、lint、SVG/PNG/draw.io) |
 | `memmap.py` `reach.py` `addrmap.py` | メモリマップの図と表、マスタごとの到達性・ループの検査 |

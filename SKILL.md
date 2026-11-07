@@ -56,7 +56,7 @@ description: 半導体チップの仕様書に載せる図を作るハーネス�
 | クロック系統図(源→PLL→MUX→分周→ゲート→ドメイン、CDC と比率同期) | 使える | `diagrams/clock-tree/GUIDE.md` | `clocktree.py` |
 | フロアプラン・ボード配置 | 使える | `diagrams/bus-architecture/GUIDE.md` の G4 | `floorplan.py` `board.py` |
 | リセット系統図(源→OR→同期化→ドメイン、解除シーケンス、RDC) | 使える | `diagrams/reset-tree/GUIDE.md` | `resettree.py` |
-| ゲートレベル図 | 予定 | — | — |
+| ゲートレベル図(記号の回路図、未接続・ループ・ゲーテッドクロック・CDC のチェック) | 使える | `diagrams/gate-level/GUIDE.md` | `gatediag.py` |
 
 ユーザが図の種類を言わなければ、G0 で目的と一緒に聞く。1つの仕様(`diagram.yaml`)から複数の図を描けるものは、名前・クロック・幅を共通にして図どうしで数字をずらさない。
 

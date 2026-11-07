@@ -1,0 +1,14 @@
+title: リセット同期化回路(非同期アサート・同期解除、テストモードで外部リセットを素通し)
+note: rst_n_in が L になると即座に rst_n_out が L。解除は clk に同期して 2 クロック後。TEST_MODE=1 では scan_rst_n をそのまま出す
+ports:
+  - {id: clk, dir: in}
+  - {id: rst_n_in, dir: in, async: true}
+  - {id: test_mode, dir: in}
+  - {id: scan_rst_n, dir: in}
+  - {id: rst_n_out, dir: out}
+cells:
+  - {id: u_sync1, type: dff, d: "1", ck: clk, rn: rst_n_in, q: s1, label: sync1}
+  - {id: u_sync2, type: dff, d: s1, ck: clk, rn: rst_n_in, q: s2, label: sync2}
+  - {id: u_tmux, type: mux, in: [s2, scan_rst_n], s: test_mode, out: rst_n_out, label: test mux}
+groups:
+  - {label: 同期化 2 段, cells: [u_sync1, u_sync2]}

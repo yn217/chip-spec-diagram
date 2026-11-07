@@ -1,0 +1,23 @@
+title: グリッチの出ないクロック切替
+note: sel を変えると、今のクロックを立ち下がりで止めてから、もう一方を立ち下がりで動かす(相手が止まるまで待つ)
+ports:
+  - {id: clk0, dir: in}
+  - {id: clk1, dir: in}
+  - {id: sel, dir: in, async: true}
+  - {id: rst_n, dir: in}
+  - {id: clk_out, dir: out, clock: true}
+cells:
+  - {id: u_inv_sel, type: not, in: [sel], out: sel_n}
+  - {id: u_nq1, type: not, in: [q1], out: q1_n}
+  - {id: u_nq0, type: not, in: [q0], out: q0_n}
+  - {id: u_a0, type: and, in: [sel_n, q1_n], out: d0}
+  - {id: u_a1, type: and, in: [sel, q0_n], out: d1}
+  - {id: u_ff0a, type: dff, d: d0, ck: clk0, rn: rst_n, q: m0, label: sync0a,
+     cdc_ok: sel と相手の停止(en1)を合わせた要求を 2 段で受ける定番の構成。sel は切替中は動かさない}
+  - {id: u_ff0, type: dff, d: m0, ck: clk0, rn: rst_n, q: q0, edge: neg, label: en0(立ち下がり)}
+  - {id: u_ff1a, type: dff, d: d1, ck: clk1, rn: rst_n, q: m1, label: sync1a,
+     cdc_ok: 同上(相手の停止 en0 と sel)}
+  - {id: u_ff1, type: dff, d: m1, ck: clk1, rn: rst_n, q: q1, edge: neg, label: en1(立ち下がり)}
+  - {id: u_g0, type: and, in: [q0, clk0], out: g0, clock_ok: true}
+  - {id: u_g1, type: and, in: [q1, clk1], out: g1, clock_ok: true}
+  - {id: u_or, type: or, in: [g0, g1], out: clk_out}

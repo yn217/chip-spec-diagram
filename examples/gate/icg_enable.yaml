@@ -1,0 +1,12 @@
+title: クロックゲート(ICG)とイネーブル付きレジスタ
+ports:
+  - {id: clk, dir: in}
+  - {id: rst_n, dir: in}
+  - {id: en, dir: in}
+  - {id: test_en, dir: in}
+  - {id: din, dir: in}
+  - {id: dout, dir: out}
+nets: {din: 32, dout: 32}
+cells:
+  - {id: u_icg, type: icg, ck: clk, en: en, te: test_en, out: gclk, note: EN は CK の L の間にラッチ}
+  - {id: u_reg, type: dff, d: din, ck: gclk, rn: rst_n, q: dout, label: "data_reg[31:0]"}
