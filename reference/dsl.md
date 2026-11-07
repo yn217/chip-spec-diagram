@@ -162,6 +162,17 @@ blocks:
 - `path` の要素: `ブロック.ポート` / パッドID / バスID(バス上を通る)/ ブロックID(中心)。`chipdiag.py anchors` で一覧。
 - YAMLの値に `? : # [ ]` を含む時は `"..."` で囲む。
 
+### storyboard(動作説明のコマ割り)
+`scenario.steps` または `latency.accesses` を 1 ステップ 1 コマで並べる(`scripts/storyboard.py`)。
+```yaml
+storyboard:
+  title: 推論1回の処理   # 省略時は scenario.title
+  cols: 2                # 省略時: 横長の図 2 / 縦長の図 4 / 大きな図 1
+  crop: union            # union = 全コマ同じ範囲・同じ縮尺(既定) / auto = コマごとに寄る / full = 図全体
+  width: 620             # コマの幅 px
+  aspect: 1.33           # コマの縦横比。省略時は図の動く範囲に合わせる
+```
+
 ## floorplan.yaml
 ```yaml
 floorplan:
