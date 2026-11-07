@@ -10,7 +10,8 @@ diagram.yaml の resets: を使う
     sources:
       - {id: por,   label: POR,        kind: por}    # por | bod | pad | wdt | sw | dbg
       - {id: rst_n, label: RST_N,      kind: pad, polarity: low}
-      - {id: wdt,   label: WDT タイムアウト, kind: wdt}
+      - {id: wdt,   label: WDT タイムアウト, kind: wdt, type: sync, from: wdog}   # type: async|sync、同期なら発行クロック
+                                                     # (clock_domain / clock / 発行元ブロック from のクロック)
     domains:
       - id: rst_sys
         label: system
@@ -21,10 +22,12 @@ diagram.yaml の resets: を使う
         wait: [pll_sys]              # 解除前に待つ PLL ロック(clocks.plls の id)
         after: []                    # 先に解除されている必要があるドメイン
         isolation: false             # 単独リセット時にバスを切り離す仕組み(アイソレーション/静止化)がある
+        style: async                 # async = 非同期アサート・同期解除(既定)/ sync = 同期リセット
   block/bus に reset_domain: rst_xxx を書く。子ブロックは親を継ぐ。
 
 チェック(lint):
   [リセット未割当] [未定義] [順序](after の循環) [同期](段数 < 2) [PLL](PLL 由来のクロックなのにロック待ちがない)
+  [リセット発行](同期リセットなのに発行クロックが未決) [自己リセット](発行元が自分のドメインをリセットするのに伸長がない)
   [RDC] 片側だけが単独でリセットされうる接続(相手が動いている時に X/グリッチが届く)。isolation: true なら対策ありとして表示のみ
 """
 import os, sys, argparse
@@ -101,6 +104,27 @@ class ResetTree:
         return mem
 
     # ---------- チェック ----------
+    def src_info(self, x):
+        """源の 非同期/同期、発行クロック(ラベル, 色)、発行元ブロック"""
+        k = x.get("kind")
+        typ = x.get("type") or ("async" if k in ("por", "bod", "pad") else "sync")
+        ck = None
+        cd = x.get("clock_domain")
+        b = self.c.blocks.get(x.get("from")) if x.get("from") else None
+        if not cd and b is not None:                     # 発行元ブロックのクロックを使う
+            o = b
+            while o is not None and not o.get("clock_domain") and o.get("_parent"):
+                o = self.c.blocks.get(o["_parent"])
+            cd = o.get("clock_domain") if o else None
+        if cd and cd in self.ckd:
+            d = self.ckd[cd]
+            ck = (f'{d.get("label", cd)} {d.get("freq", "")}'.strip(), d.get("color", GRAY))
+        elif x.get("clock"):
+            ck = (str(x["clock"]), GRAY)
+        elif cd:
+            ck = (cd, GRAY)
+        return typ, ck, (b.get("label", b["id"]) if b is not None else x.get("from"))
+
     def check(self):
         for d in self.doms:
             for s in d.get("sources", []):
@@ -124,6 +148,30 @@ class ResetTree:
                 if src in self.plls and src not in d.get("wait", []) and not self._waits_via_after(d, src):
                     self.warn.append(f"[PLL] {d['id']}: クロック {cd} は {self.plls[src].get('label', src)} 由来だが、"
                                      f"ロックを待たずに解除されうる(wait: [{src}] を追加)")
+        for x in self.srcs:
+            typ, ck, frm = self.src_info(x)
+            lab = x.get("label", x["id"])
+            if typ not in ("async", "sync"):
+                self.warn.append(f"[リセット発行] {lab}: type は async か sync")
+            if typ == "sync" and ck is None:
+                self.warn.append(f"[リセット発行] {lab}: 同期リセットだが、発行するクロックが未決(clock_domain / clock / from を書く)")
+            if x.get("from") and x["from"] not in self.c.blocks:
+                self.warn.append(f"[未定義] {lab}: 発行元 {x['from']} がブロックにない")
+            if x.get("clock_domain") and self.ckd and x["clock_domain"] not in self.ckd:
+                self.warn.append(f"[未定義] {lab}: clock_domain {x['clock_domain']} が clocks.domains にない")
+            # 自分が入っているドメインを自分でリセットする: パルスを保持しないと途中で消える
+            if x.get("from") in self.c.blocks:
+                own = self.dom_of_block(x["from"])
+                for d in self.doms:
+                    if d["id"] == own and x["id"] in d.get("sources", []) and not d.get("stretch"):
+                        self.warn.append(f"[自己リセット] {lab}: 発行元 {frm} は {self.dl(own)} に入っていて、そのドメインを自分でリセットする。"
+                                         f"発行元も途中でリセットされるので、リセット制御でパルスを保持する(stretch を書く)")
+        for d in self.doms:
+            st = d.get("style", "async")
+            if st not in ("async", "sync"):
+                self.warn.append(f"[同期] {d['id']}: style は async(非同期アサート・同期解除)か sync(同期リセット)")
+            if st == "sync" and not d.get("clock_domain"):
+                self.warn.append(f"[同期] {d['id']}: 同期リセットのドメインはクロックが要る(clock_domain)")
         used = {s for d in self.doms for s in d.get("sources", [])}
         for s in self.srcs:
             if s["id"] not in used:
@@ -239,10 +287,11 @@ class ResetTree:
             if cur.strip():
                 out.append(cur.strip())
             return out[:3]
-        CS = 104
+        CS = 116
         BW = CS - 12
         labs = {x["id"]: wrap(x.get("label", x["id"]), BW - 10) for x in srcs}
-        BH = 22 + max(len(v) for v in labs.values()) * 14 if srcs else 40
+        sinfo = {x["id"]: self.src_info(x) for x in srcs}
+        BH = 50 + max(len(v) for v in labs.values()) * 14 + (12 if any(v[2] for v in sinfo.values()) else 0) if srcs else 40
         chip_x = 24
         X_C0 = chip_x + 20
         colx = {x["id"]: X_C0 + i * CS + CS / 2 for i, x in enumerate(srcs)}
@@ -255,7 +304,7 @@ class ResetTree:
         GX, GW = X_CTL + 22, 44                           # OR
         X_ST = GX + GW + 14                               # 伸長・PLL 待ちの文字
         X_SY = X_CTL + 236                                # 同期化
-        W_SY = 118
+        W_SY = 150
         X_DOM = X_SY + W_SY + 64
         W_DOM = 360
         SPAL = ["#334155", "#b91c1c", "#0369a1", "#a16207", "#7e22ce", "#15803d", "#c2410c", "#be185d", "#0f766e"]
@@ -339,6 +388,7 @@ class ResetTree:
             sub = KIND.get(x.get("kind"), x.get("kind", ""))
             if x.get("polarity") == "low":
                 sub += "・負論理"
+            typ, ck, frm = sinfo[x["id"]]
             col = scol[x["id"]]
             dash = ' stroke-dasharray="5 4"' if pad else ""
             o.append(f'<rect x="{f(cx_ - BW / 2)}" y="{f(by)}" width="{f(BW)}" height="{f(BH)}" rx="4" fill="#fff" stroke="{col}" '
@@ -346,7 +396,21 @@ class ResetTree:
             for j, t in enumerate(lab):
                 o.append(f'<text x="{f(cx_)}" y="{f(by + 16 + j * 14)}" font-size="11.5" font-weight="800" fill="{col}" '
                          f'text-anchor="middle">{esc(t)}</text>')
-            o.append(f'<text x="{f(cx_)}" y="{f(by + BH - 7)}" font-size="9.5" fill="{GRAY}" text-anchor="middle">{esc(sub)}</text>')
+            ty = by + 16 + len(lab) * 14
+            o.append(f'<text x="{f(cx_)}" y="{f(ty - 2)}" font-size="9.5" fill="{GRAY}" text-anchor="middle">{esc(sub)}</text>')
+            # 非同期 / 同期(発行クロック)
+            if typ == "async":
+                o.append(f'<rect x="{f(cx_ - 24)}" y="{f(ty + 3)}" width="48" height="15" rx="7.5" fill="#fff" stroke="#475569" '
+                         f'stroke-width="1"/><text x="{f(cx_)}" y="{f(ty + 14)}" font-size="9.5" font-weight="800" fill="#475569" '
+                         f'text-anchor="middle">非同期</text>')
+            else:
+                ckl, ckc = ck if ck else ("クロック未決", "#b45309")
+                tw = min(BW - 6, wlen("同期 " + ckl) * 5.6 + 12)
+                o.append(f'<rect x="{f(cx_ - tw / 2)}" y="{f(ty + 3)}" width="{f(tw)}" height="15" rx="7.5" fill="{ckc}" fill-opacity=".12" '
+                         f'stroke="{ckc}" stroke-width="1"/><text x="{f(cx_)}" y="{f(ty + 14)}" font-size="9" font-weight="800" '
+                         f'fill="{ckc if ck else "#b45309"}" text-anchor="middle">同期 {esc(ckl)}</text>')
+            if frm:
+                o.append(f'<text x="{f(cx_)}" y="{f(ty + 31)}" font-size="9.5" fill="{INK}" text-anchor="middle">発行: {esc(frm)}</text>')
             if pad:
                 o.append(f'<rect x="{f(cx_ - 8)}" y="{f(CT - 8)}" width="16" height="16" fill="#cbd5e1" stroke="{INK}" stroke-width="1.5"/>')
             if joins[x["id"]]:
@@ -383,12 +447,17 @@ class ResetTree:
             ckd = self.ckd.get(cd, {})
             ccol = ckd.get("color", GRAY)
             sync = int(d.get("sync", 2)) if cd else 0
+            st = d.get("style", "async")
             if cd:
-                o.append(f'<rect x="{f(X_SY)}" y="{f(cyd - 24)}" width="{W_SY}" height="48" rx="4" fill="{ccol}" fill-opacity=".08" '
-                         f'stroke="{ccol}" stroke-width="1.6"/><text x="{f(X_SY + W_SY / 2)}" y="{f(cyd - 6)}" font-size="11.5" '
-                         f'font-weight="800" fill="{INK}" text-anchor="middle">{sync}段 同期化</text>'
-                         f'<text x="{f(X_SY + W_SY / 2)}" y="{f(cyd + 12)}" font-size="10.5" font-weight="700" fill="#0369a1" '
-                         f'text-anchor="middle">{esc(ckd.get("label", cd))} {esc(ckd.get("freq", ""))}</text>')
+                head = f"{sync}段 同期化" if st == "async" else f"{sync}段 同期化・同期リセット"
+                foot = "非同期アサート・同期解除" if st == "async" else "アサートもクロックで"
+                o.append(f'<rect x="{f(X_SY)}" y="{f(cyd - 30)}" width="{W_SY}" height="60" rx="4" fill="{ccol}" fill-opacity=".08" '
+                         f'stroke="{ccol}" stroke-width="1.6"/><text x="{f(X_SY + W_SY / 2)}" y="{f(cyd - 13)}" font-size="11" '
+                         f'font-weight="800" fill="{INK}" text-anchor="middle">{esc(head)}</text>'
+                         f'<text x="{f(X_SY + W_SY / 2)}" y="{f(cyd + 3)}" font-size="10.5" font-weight="700" fill="#0369a1" '
+                         f'text-anchor="middle">{esc(ckd.get("label", cd))} {esc(ckd.get("freq", ""))}</text>'
+                         f'<text x="{f(X_SY + W_SY / 2)}" y="{f(cyd + 20)}" font-size="9.5" fill="{GRAY if st == "async" else "#b45309"}" '
+                         f'text-anchor="middle">{foot}</text>')
             else:
                 o.append(f'<rect x="{f(X_SY)}" y="{f(cyd - 24)}" width="{W_SY}" height="48" rx="4" fill="#fff" stroke="#f59e0b" '
                          f'stroke-width="1.6" stroke-dasharray="4 3"/><text x="{f(X_SY + W_SY / 2)}" y="{f(cyd + 4)}" font-size="11" '
@@ -446,18 +515,24 @@ class ResetTree:
             o.append(f'<path d="{p}" fill="none" stroke="{col}" stroke-width="2"/>')
         o.append(f'<text x="12" y="{f(H - 14)}" font-size="11" fill="{GRAY}">OR = どれかのリセット源が入るとリセット / 非同期でリセットに入り、'
                  f'解除はドメインのクロックに同期 / 赤破線 = 片側だけ単独リセットされる乗り換え(RDC)・緑 = 切り離しあり / 破線の源 = チップ外 / '
-                 f'波形は L = リセット中</text></svg>')
+                 f'波形は L = リセット中</text><text x="12" y="{f(H - 30)}" font-size="11" fill="{GRAY}">源の札: 非同期 = クロックと無関係に入る / '
+                 f'同期 &lt;クロック&gt; = そのクロックの FF から出る(発行 = 出すブロック) / 同期化の箱: 非同期アサート・同期解除 か 同期リセット(アサートにもクロックが要る)</text></svg>')
         return "".join(o).replace("<!--LINES-->", "".join(ow), 1)
 
     def md(self):
         L = ["# リセット系統", "", "## リセット源 × ドメイン", ""]
-        L.append("| ドメイン | " + " | ".join(s.get("label", s["id"]) for s in self.srcs) + " | 同期 | 解除 |")
-        L.append("|---|" + "---|" * len(self.srcs) + "---|---|")
+        L.append("| ドメイン | " + " | ".join(s.get("label", s["id"]) for s in self.srcs) + " | 同期 | 方式 | 解除 |")
+        L.append("|---|" + "---|" * len(self.srcs) + "---|---|---|")
         for d in self.doms:
             row = ["●" if s["id"] in d.get("sources", []) else "" for s in self.srcs]
             ck = self.ckd.get(d.get("clock_domain"), {})
             sy = f'{d.get("sync", 2)}段 @{ck.get("label", d.get("clock_domain", "未決"))}' if d.get("clock_domain") else "未決"
-            L.append(f'| {d.get("label", d["id"])} | ' + " | ".join(row) + f' | {sy} | {self.rank.get(d["id"], 1)}番目 |')
+            L.append(f'| {d.get("label", d["id"])} | ' + " | ".join(row) + f' | {sy} | {"同期リセット" if d.get("style") == "sync" else "非同期アサート・同期解除"} | {self.rank.get(d["id"], 1)}番目 |')
+        L += ["", "## リセット源", "", "| 源 | 種類 | 非同期/同期 | 発行クロック | 発行元 |", "|---|---|---|---|---|"]
+        for x in self.srcs:
+            typ, ck, frm = self.src_info(x)
+            L.append(f'| {x.get("label", x["id"])} | {KIND.get(x.get("kind"), x.get("kind", ""))} | '
+                     f'{"非同期" if typ == "async" else "同期"} | {ck[0] if ck else ("—" if typ == "async" else "未決")} | {frm or ""} |')
         L += ["", "## 解除の順番", ""]
         for d in sorted(self.doms, key=lambda d: self.step.get(d["id"], 1)):
             pre = [self.dl(a) for a in d.get("after", [])] + [self.plls.get(p, {}).get("label", p) + " ロック" for p in d.get("wait", [])]

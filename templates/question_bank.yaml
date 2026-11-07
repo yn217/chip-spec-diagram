@@ -371,7 +371,7 @@ items:
     modes: [concept, rtl, mixed]
   - id: reset_sources
     category: リセット系統
-    q: リセット源は？(POR・外部リセット端子・ウォッチドッグ・ソフトウェアリセット・デバッガ・PCIe PERST# など)
+    q: リセット源は？(POR・外部リセット端子・ウォッチドッグ・ソフトウェアリセット・デバッガ・PCIe PERST# など)それぞれ非同期か同期か、同期ならどのクロック(どのブロック)で発行しますか？
     free: true
     options:
       - {label: 仕様書/RTLから読む, description: リセット制御(SRC)の仕様やリセット端子を指定}
@@ -394,7 +394,7 @@ items:
     modes: [concept, rtl, mixed]
   - id: reset_sequence
     category: リセット系統
-    q: 解除の順番は？(PLL ロック待ち・伸長サイクル・先に解除するドメイン)。解除の同期化は何段ですか？
+    q: 解除の順番は？(PLL ロック待ち・伸長サイクル・先に解除するドメイン)。解除の同期化は何段ですか？各ドメインの FF は非同期リセット(非同期アサート・同期解除)ですか、同期リセットですか？
     free: true
     options:
       - {label: 決まっている, description: 順番と待ち条件を入力}

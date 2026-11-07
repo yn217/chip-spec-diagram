@@ -173,6 +173,8 @@ resets:
   sources:
     - {id: por,   label: POR,   kind: por}                 # por | bod | pad | wdt | sw | dbg
     - {id: rst_n, label: RST_N, kind: pad, polarity: low}  # pad = チップ外から端子経由
+    - {id: wdt, label: WDT, kind: wdt, type: sync, from: wdog}   # type: async|sync(省略時 por/bod/pad は async)
+    - {id: dbg, label: デバッガ, kind: dbg, type: sync, clock: TCK 25MHz}   # 同期なら発行クロック: clock_domain / clock / from
   domains:
     - id: rst_sys
       label: system
@@ -184,6 +186,7 @@ resets:
       after: []                          # 先に解除されるドメイン
       isolation: false                   # 単独リセット時の切り離し/静止化
       signal: rst_sys_n                  # 省略時 <id>_n
+      style: async                       # async = 非同期アサート・同期解除(既定)/ sync = 同期リセット
 blocks:
   - {id: npu, reset_domain: rst_npu, ...}   # 子ブロック・付属ブロックは親を継ぐ
 ```

@@ -214,12 +214,12 @@ clocks:
 resets:
   default: rst_sys                # reset_domain のないブロック・バスは system ドメイン
   sources:
-  - {id: por, label: POR, kind: por}
-  - {id: rst_n, label: RST_N, kind: pad, polarity: low}
-  - {id: perst, label: PCIe PERST#, kind: pad, polarity: low}
-  - {id: wdt, label: WDT タイムアウト, kind: wdt}
-  - {id: sw_npu, label: SW リセット(NPU), kind: sw}
-  - {id: sw_eth, label: SW リセット(ETH), kind: sw}
+  - {id: por, label: POR, kind: por, type: async}
+  - {id: rst_n, label: RST_N, kind: pad, polarity: low, type: async}
+  - {id: perst, label: PCIe PERST#, kind: pad, polarity: low, type: async}
+  - {id: wdt, label: WDT タイムアウト, kind: wdt, type: sync, clock_domain: core_clk}
+  - {id: sw_npu, label: SW リセット(NPU), kind: sw, type: sync, from: cpu}
+  - {id: sw_eth, label: SW リセット(ETH), kind: sw, type: sync, from: cpu}
   domains:
   - {id: rst_sys, label: system, sources: [por, rst_n, wdt], clock_domain: core_clk, sync: 2, stretch: 16, wait: [pll_sys]}
   - {id: rst_ddr, label: ddr, sources: [por, rst_n, wdt], clock_domain: ddr_clk, sync: 2, stretch: 8, wait: [pll_ddr], after: [rst_sys]}

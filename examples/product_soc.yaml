@@ -306,12 +306,12 @@ links:
 resets:
   default: rst_sys
   sources:
-  - {id: por, label: POR, kind: por}
-  - {id: rst_n, label: RST_N, kind: pad, polarity: low}
-  - {id: wdt, label: WDT タイムアウト, kind: wdt}
-  - {id: sw_cpu, label: SW リセット(CPU), kind: sw}
-  - {id: sw_mm, label: SW リセット(GPU/VPU/ML), kind: sw}
-  - {id: dbg, label: デバッガ, kind: dbg}
+  - {id: por, label: POR, kind: por, type: async}
+  - {id: rst_n, label: RST_N, kind: pad, polarity: low, type: async}
+  - {id: wdt, label: WDT タイムアウト, kind: wdt, type: sync, from: wdog}
+  - {id: sw_cpu, label: SW リセット(CPU), kind: sw, type: sync, from: sysctl}
+  - {id: sw_mm, label: SW リセット(GPU/VPU/ML), kind: sw, type: sync, from: sysctl}
+  - {id: dbg, label: デバッガ, kind: dbg, type: sync, clock: TCK 25MHz(仮)}
   domains:
   - {id: rst_sys, label: system(NoC・周辺), sources: [por, rst_n, wdt], clock_domain: noc, stretch: 32, wait: [sys_pll]}
   - {id: rst_cpu, label: CPU, sources: [por, rst_n, wdt, sw_cpu, dbg], clock_domain: a53, wait: [arm_pll], after: [rst_sys],
@@ -321,4 +321,4 @@ resets:
   - {id: rst_vpu, label: VPU, sources: [por, rst_n, wdt, sw_mm], clock_domain: vpu, after: [rst_ddr], isolation: true}
   - {id: rst_ml, label: ML, sources: [por, rst_n, wdt, sw_mm], clock_domain: ml, wait: [sys_pll2], after: [rst_ddr], isolation: true}
   - {id: rst_rt, label: RT(MCU), sources: [por, rst_n], clock_domain: rt, after: [rst_sys], isolation: true}
-  - {id: rst_aud, label: Audio, sources: [por, rst_n, wdt], clock_domain: aud, after: [rst_sys]}
+  - {id: rst_aud, label: Audio, sources: [por, rst_n, wdt], clock_domain: aud, style: sync, after: [rst_sys]}
