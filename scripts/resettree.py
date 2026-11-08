@@ -427,7 +427,8 @@ class ResetTree:
         INT_Y = CT + 14
         ROW0 = INT_Y + BH + 34
         X_CTL = X_C0 + ns * CS + 8                         # リセット制御の枠
-        GX, GW = X_CTL + 22, 44                           # OR
+        GX = X_CTL + 22                                   # OR(IEEE Std 91 の形: 奥行き = √3/2 × 高さ)
+        GW = 0.866 * max([max(len([x for x in d.get("sources", []) if x in self.sid]) * 14 + 8, 30) for d in doms] + [30])
         X_ST = GX + GW + 14                               # 伸長・PLL 待ちの文字
         X_SY = X_CTL + 236                                # 同期化
         W_SY = 150
@@ -518,13 +519,12 @@ class ResetTree:
             k = len(ins)
             gh = max(k * 14 + 8, 30)
             gy = y0 + h / 2 - gh / 2
-            d["_g"] = (GX, gy, GW, gh)
+            d["_g"] = (GX, gy, 0.866 * gh, gh)
             for j, x in enumerate(ins):
                 iy = gy + gh / 2 + (j - (k - 1) / 2) * 14
                 joins[x].append(iy)
                 if k > 1:
-                    t = (iy - gy) / gh
-                    xb = GX + 2 * t * (1 - t) * GW * 0.32
+                    xb = GX - .866 * gh + (gh * gh - (iy - gy - gh / 2) ** 2) ** .5    # 後ろの円弧(半径 = 高さ)
                 else:
                     xb = X_SY
                 branches.append((colx[x], iy, xb, scol[x]))
@@ -577,10 +577,8 @@ class ResetTree:
             gx, gy, gw, gh = d["_g"]
             k = len([s for s in d.get("sources", []) if s in self.sid])
             if k > 1:
-                o.append(f'<path d="M{f(gx)},{f(gy)} Q{f(gx + gw * .32)},{f(gy + gh / 2)} {f(gx)},{f(gy + gh)} '
-                         f'C{f(gx + gw * .5)},{f(gy + gh)} {f(gx + gw * .97)},{f(gy + gh * .74)} {f(gx + gw)},{f(gy + gh / 2)} '
-                         f'C{f(gx + gw * .97)},{f(gy + gh * .26)} {f(gx + gw * .5)},{f(gy)} {f(gx)},{f(gy)} Z" '
-                         f'fill="#fff" stroke="{INK}" stroke-width="1.6"/>')
+                o.append(f'<path d="M{f(gx)},{f(gy)} A{f(gh)},{f(gh)} 0 0 1 {f(gx + gw)},{f(gy + gh / 2)} A{f(gh)},{f(gh)} 0 0 1 {f(gx)},{f(gy + gh)} '
+                         f'A{f(gh)},{f(gh)} 0 0 0 {f(gx)},{f(gy)} Z" fill="#fff" stroke="{INK}" stroke-width="1.6"/>')
                 ow.append(f'<path d="M{f(gx + gw)},{f(cyd)} L{f(X_SY)},{f(cyd)}" stroke="{INK}" stroke-width="1.6" fill="none" marker-end="url(#rsa)"/>')
             else:
                 ow.append(f'<path d="M{f(X_SY - 12)},{f(cyd)} L{f(X_SY)},{f(cyd)}" stroke="{INK}" stroke-width="1.6" fill="none" marker-end="url(#rsa)"/>')

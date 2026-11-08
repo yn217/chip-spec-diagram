@@ -22,6 +22,7 @@ gate.yaml:
   groups:                               # 説明用の囲み(任意)
     - {label: 同期化 2 段, cells: [ff1, ff2]}
   "0" / "1" はタイ(定数)。cell に label(表示名)・note(注記)を書ける。
+  symbols: ansi(既定: IEEE Std 91 / MIL-STD-806 の形。OR の前は半径 = 高さの円弧 2 つ)| iec(IEC 60617-12 の四角に &・≥1・=1・1)
 
 配置: 左から右へ信号の流れ順に列を作り(長い接続は中継点を入れる)、列の間の通路に縦の幹線を引く。戻りの接続は上を回る。
 クロックの網は色分け(元の端子ごと)、リセットの網は茶色。
@@ -36,6 +37,8 @@ import yaml
 GRAY = "#64748b"
 CLK_PAL = ["#2563eb", "#9333ea", "#0891b2", "#db2777", "#16a34a", "#ca8a04"]
 RST_C = "#92400e"
+OR_C = 3 ** .5 / 2          # IEEE Std 91 / MIL-STD-806: OR の前の 2 つの円弧(半径 = 高さ)の頂点までの奥行き = √3/2 × 高さ
+OR_X = 5 / 26               # XOR の後ろの線の間隔(高さ比)
 GATES = {"and", "or", "nand", "nor", "xor", "xnor", "not", "buf"}
 CONST = {"0", "1", "1'b0", "1'b1", "0'b0"}
 
@@ -53,8 +56,9 @@ def cval(n):
 
 
 class Gate:
-    def __init__(self, spec):
+    def __init__(self, spec, symbols=None):
         self.s = spec
+        self.iec = (symbols or spec.get("symbols", "ansi")) == "iec"    # ansi = IEEE Std 91 の形 / iec = IEC 60617 の四角
         self.warn, self.info = [], []
         self.width = {k: int(v) for k, v in (spec.get("nets") or {}).items()}
         self.nodes = {}            # id -> node
@@ -320,10 +324,15 @@ class Gate:
             P["y"] = (w, 13, "R")
         elif k in GATES:
             ni = len([p for p in n["pins"] if p.startswith("i")])
-            h = max(32, ni * 14 + 6)
-            w = 52 if k in ("xor", "xnor") else 48
+            h = max(36, ni * 14 + 8)
+            if self.iec:
+                w = 40
+            elif k in ("and", "nand"):
+                w = h                                    # IEEE Std 91: 奥行き = 高さ(直線 h/2 + 半円)
+            else:
+                w = OR_C * h + (OR_X * h if k in ("xor", "xnor") else 0)   # 前は半径 h の円弧 2 つ
             if k in ("nand", "nor", "xnor"):
-                w += 6
+                w += 8
             for i in range(ni):
                 P[f"i{i}"] = (0, h / 2 + (i - (ni - 1) / 2) * 14, "L")
             P["y"] = (w, h / 2, "R")
@@ -630,11 +639,25 @@ class Gate:
             o.append(f'<path d="M{f(x)},{f(y + h / 2)} L{f(x + 10)},{f(y)} L{f(x + w)},{f(y)} L{f(x + w)},{f(y + h)} L{f(x + 10)},{f(y + h)} Z" '
                      f'fill="#f1f5f9" stroke="{INK}" stroke-width="1.4"/><text x="{f(x + 16)}" y="{f(y + 14)}" font-size="11" '
                      f'font-weight="700" fill="{INK}">{esc(n["label"])}</text>')
+        elif k in ("not", "buf") and self.iec:
+            bw = w - (8 if k == "not" else 0)
+            o.append(f'<rect x="{f(x)}" y="{f(y)}" width="{f(bw)}" height="{f(h)}" {S}/>'
+                     f'<text x="{f(x + bw / 2)}" y="{f(y + h / 2 + 4)}" font-size="12" font-weight="700" fill="{INK}" text-anchor="middle">1</text>')
+            if k == "not":
+                o.append(bubble(x + bw + 3.6, y + h / 2))
         elif k in ("not", "buf"):
             tw = w - (8 if k == "not" else 0)
             o.append(f'<path d="M{f(x)},{f(y)} L{f(x + tw)},{f(y + h / 2)} L{f(x)},{f(y + h)} Z" {S}/>')
             if k == "not":
                 o.append(bubble(x + tw + 3.6, y + h / 2))
+        elif k in GATES and self.iec and k not in ("not", "buf"):
+            inv = k in ("nand", "nor", "xnor")
+            bw = w - (8 if inv else 0)
+            lab = {"and": "&", "nand": "&", "or": "≥1", "nor": "≥1", "xor": "=1", "xnor": "=1"}[k]
+            o.append(f'<rect x="{f(x)}" y="{f(y)}" width="{f(bw)}" height="{f(h)}" {S}/>'
+                     f'<text x="{f(x + bw / 2)}" y="{f(y + 15)}" font-size="12" font-weight="700" fill="{INK}" text-anchor="middle">{esc(lab)}</text>')
+            if inv:
+                o.append(bubble(x + bw + 3.6, y + h / 2))
         elif k in ("and", "nand"):
             bw = w - (8 if k == "nand" else 0)
             r = h / 2
@@ -642,17 +665,20 @@ class Gate:
             if k == "nand":
                 o.append(bubble(x + bw + 3.6, y + h / 2))
         elif k in ("or", "nor", "xor", "xnor"):
-            off = 6 if k in ("xor", "xnor") else 0
-            bw = w - (8 if k in ("nor", "xnor") else 0)
+            # IEEE Std 91 / MIL-STD-806 の形: 前 = 半径 h の円弧 2 つ(中心は反対側の後ろの角)、後ろ = 半径 h の円弧
+            off = OR_X * h if k in ("xor", "xnor") else 0
             x0 = x + off
-            L_ = x + bw - x0                             # 先は鈍く(接線を立てて丸みのある先端に)
-            o.append(f'<path d="M{f(x0)},{f(y)} Q{f(x0 + 12)},{f(y + h / 2)} {f(x0)},{f(y + h)} '
-                     f'C{f(x0 + L_ * .5)},{f(y + h)} {f(x0 + L_ * .97)},{f(y + h * .74)} {f(x + bw)},{f(y + h / 2)} '
-                     f'C{f(x0 + L_ * .97)},{f(y + h * .26)} {f(x0 + L_ * .5)},{f(y)} {f(x0)},{f(y)} Z" {S}/>')
+            c = OR_C * h
+            o.append(f'<path d="M{f(x0)},{f(y)} A{f(h)},{f(h)} 0 0 1 {f(x0 + c)},{f(y + h / 2)} A{f(h)},{f(h)} 0 0 1 {f(x0)},{f(y + h)} '
+                     f'A{f(h)},{f(h)} 0 0 0 {f(x0)},{f(y)} Z" {S}/>')
             if off:
-                o.append(f'<path d="M{f(x)},{f(y)} Q{f(x + 12)},{f(y + h / 2)} {f(x)},{f(y + h)}" fill="none" stroke="{INK}" stroke-width="1.6"/>')
+                o.append(f'<path d="M{f(x)},{f(y + h)} A{f(h)},{f(h)} 0 0 0 {f(x)},{f(y)}" fill="none" stroke="{INK}" stroke-width="1.6"/>')
+            for pn, (dx, dy, sd) in P.items():           # 入力線を後ろの円弧まで伸ばす
+                if pn.startswith("i"):
+                    xb = x - c + (h * h - (dy - h / 2) ** 2) ** .5
+                    o.append(f'<path d="M{f(x)},{f(y + dy)} L{f(xb)},{f(y + dy)}" stroke="{INK}" stroke-width="1.5"/>')
             if k in ("nor", "xnor"):
-                o.append(bubble(x + bw + 3.6, y + h / 2))
+                o.append(bubble(x0 + c + 3.6, y + h / 2))
         elif k == "mux":
             o.append(f'<path d="M{f(x)},{f(y)} L{f(x + w)},{f(y + 10)} L{f(x + w)},{f(y + h - 18)} L{f(x)},{f(y + h)} Z" {S}/>')
             ni = len([p for p in P if p.startswith("i")])
@@ -886,6 +912,7 @@ def main():
     ap.add_argument("-o", "--out", default="out")
     ap.add_argument("-m", "--module")
     ap.add_argument("--png", action="store_true")
+    ap.add_argument("--symbols", choices=["ansi", "iec"], help="ansi = IEEE Std 91 の形(既定)/ iec = IEC 60617 の四角")
     a = ap.parse_args()
     if a.cmd == "netlist":
         spec, skipped = from_netlist(a.src, a.module)
@@ -895,7 +922,7 @@ def main():
             print("  [info] 対応表にないセル(手で type を足す): " + ", ".join(skipped))
         return
     spec = yaml.safe_load(open(a.src, encoding="utf-8"))
-    g = Gate(spec)
+    g = Gate(spec, a.symbols)
     if a.cmd == "lint":
         g.check()
     else:
