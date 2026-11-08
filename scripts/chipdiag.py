@@ -1468,13 +1468,13 @@ class Chip:
             col = PAST if past else fl.get("color", "#e11d48")
             self.colors.add(col)
             ctrl = fl.get("style") == "control"
-            sw = 2.2 if past else (2.6 if ctrl else 4.4)
+            sw = (2.2 if past else (2.6 if ctrl else 4.4)) * getattr(self, "flow_scale", 1)   # ストーリーボードでは太く
             dash = ' stroke-dasharray="7 5"' if ctrl else ""
             d = self.d(pts)
             if not past:
                 out.append(f'<path d="{d}" fill="none" stroke="#fff" stroke-width="{sw+4}" '
                            f'stroke-linejoin="round" opacity=".9"/>')
-                out.append(f'<circle cx="{f(pts[0][0])}" cy="{f(pts[0][1])}" r="{4.5 if not ctrl else 3.5}" '
+                out.append(f'<circle cx="{f(pts[0][0])}" cy="{f(pts[0][1])}" r="{(4.5 if not ctrl else 3.5) * getattr(self, "flow_scale", 1)}" '
                            f'fill="{col}" stroke="#fff" stroke-width="1.5"/>')
             out.append(f'<path d="{d}" fill="none" stroke="{col}" stroke-width="{sw}" stroke-linejoin="round" '
                        f'stroke-linecap="round"{dash} marker-end="url(#ah{col[1:]})" '

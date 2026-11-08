@@ -217,6 +217,7 @@ storyboard:
   crop: union            # union = 全コマ同じ範囲・同じ縮尺(既定) / auto = コマごとに寄る / full = 図全体
   width: 620             # コマの幅 px
   aspect: 1.33           # コマの縦横比。省略時は図の動く範囲に合わせる
+  arrow_width: 5         # データの動きの矢印の太さ(コマの上での px)。縮小しても細くならない
 ```
 
 ## floorplan.yaml

@@ -7,6 +7,7 @@
 
   python3 storyboard.py spec.yaml -o out/ [--png] [--cols 2] [--crop union|auto|full] [--width 620]
   crop: union(既定)= 全ステップで動く所をまとめた範囲を、どのコマも同じ縮尺で / auto = コマごとに動く所へ寄る / full = 図全体
+  storyboard.arrow_width: データの動きの矢印の太さ(コマの上での px、既定 5)
 
 spec(図の YAML)に:
   scenario:
@@ -152,7 +153,11 @@ def build(c, opt):
                 cx_, cy_ = view[0] + view[2] / 2, view[1] + view[3] / 2
                 w_ = canvas[0] * 0.45
                 view = fit_aspect([cx_ - w_ / 2, cy_ - w_ / aspect / 2, cx_ + w_ / 2, cy_ + w_ / aspect / 2], aspect, canvas)
+        # データの動きの矢印は、縮小してもコマの上で太く見えるように(既定: 表示で約 5px)
+        zoom = (PW - 8) / view[2]
+        c.flow_scale = min(6.0, max(1.6, float(opt.get("arrow_width", 5)) / (4.4 * zoom)))
         svg = c.svg(view=view, cur=i, cumulative=st.get("cumulative", True))
+        c.flow_scale = 1
         for a, b in text_overlaps(svg):
             warn.append(f"[重なり] コマ{i}: 「{a}」と「{b}」")
         vb, body = inner(svg)
