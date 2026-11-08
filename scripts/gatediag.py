@@ -361,13 +361,13 @@ class Gate:
                 P["s"] = (w / 2, h - 6 + 12, "B")
             P["y"] = (w, h / 2, "R")
         elif k in ("dff", "latch"):
-            w, h = 44, 76                                # 縦長の長方形
-            P["d"] = (0, 20, "L")
-            P["ck" if k == "dff" else "g"] = (0, 54, "L")
+            w, h = 46, 62                                # 縦長の長方形(縦:横 ≒ 4:3)
+            P["d"] = (0, 18, "L")
+            P["ck" if k == "dff" else "g"] = (0, 44, "L")
             P["rn"] = (w / 2, h + 7.2, "B")              # 枠の下に丸(負論理)
             P["sn"] = (w / 2, -7.2, "T")                 # 枠の上に丸
-            P["q"] = (w, 20, "R")
-            P["qn"] = (w, 54, "R")
+            P["q"] = (w, 18, "R")
+            P["qn"] = (w, 44, "R")
         elif k == "block":
             ni = len([p for p in n["pins"] if p.startswith("i")])
             no = len([p for p in n["pins"] if p.startswith("y")])
