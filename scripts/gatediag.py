@@ -14,11 +14,12 @@ gate.yaml:
   nets: {data: 8}                       # バス幅(省略時 1)
   cells:
     - {id: u_and, type: and, in: [a, b], out: y}           # and/or/nand/nor/xor/xnor/not/buf(入力は 2 本以上も可)
-    - {id: u_mux, type: mux, in: [a, b], s: sel, out: y}   # in[0] = S が 0 の時
+    - {id: u_mux, type: mux, in: [a, b], s: sel, out: y}   # in[0] = 選択が 0 の時。選択信号は台形の下から(s_side: top で上)
     - {id: ff1, type: dff, d: "1", ck: clk, rn: rst_n_in, q: s1}   # dff: d ck rn sn q qn、edge: neg(立ち下がり)
                                         # cdc_ok: "理由"(わかって別クロックを論理越しに受ける所。info に残す)
     - {id: lat, type: latch, d: x, g: en, q: y}
     - {id: icg, type: icg, ck: clk, en: en, te: test_en, out: gclk}  # クロックゲート
+    - {id: add, type: block, label: 加算器, in: [a, b], out: s}       # 組み合わせ回路の箱(加算器・比較器など)
   groups:                               # 説明用の囲み(任意)
     - {label: 同期化 2 段, cells: [ff1, ff2]}
   "0" / "1" はタイ(定数)。cell に label(表示名)・note(注記)を書ける。
@@ -64,6 +65,8 @@ class Gate:
         # クロック・リセットの配線は既定では描かず、端子に網名を書く(必要な時だけ描く)
         self.show_clk = bool(w.get("clock", False) if clock_wires is None else clock_wires)
         self.show_rst = bool(w.get("reset", False) if reset_wires is None else reset_wires)
+        # FF の段をそろえる(同じ段の FF を同じ列・段の間は等間隔・前の段と同じ高さ)。layout: flow で流れ順だけ
+        self.stage_mode = spec.get("layout", "stages") == "stages"
         self.warn, self.info = [], []
         self.width = {k: int(v) for k, v in (spec.get("nets") or {}).items()}
         self.nodes = {}            # id -> node
@@ -83,6 +86,12 @@ class Gate:
                 for i, n in enumerate(ins):
                     pins[f"i{i}"] = ("in", n)
                 pins["y"] = ("out", c.get("out"))
+            elif t == "block":                            # 加算器・比較器などの組み合わせ回路(箱に名前)
+                for i, n in enumerate(c.get("in", [])):
+                    pins[f"i{i}"] = ("in", n)
+                outs = c.get("out") if isinstance(c.get("out"), list) else [c.get("out")]
+                for i, n in enumerate(outs):
+                    pins[f"y{i}" if len(outs) > 1 else "y"] = ("out", n)
             elif t == "mux":
                 for i, n in enumerate(c.get("in", [])):
                     pins[f"i{i}"] = ("in", n)
@@ -101,7 +110,7 @@ class Gate:
                         pins[k] = ("in", c.get(k))
                 pins["y"] = ("out", c.get("out"))
             else:
-                self.warn.append(f"[未定義] {c['id']}: type {t} は使えない(and/or/nand/nor/xor/xnor/not/buf/mux/dff/latch/icg)")
+                self.warn.append(f"[未定義] {c['id']}: type {t} は使えない(and/or/nand/nor/xor/xnor/not/buf/mux/dff/latch/icg/block)")
                 continue
             N[c["id"]] = {"id": c["id"], "kind": t, "cell": c, "label": c.get("label", c["id"]), "pins": pins}
         # 網: 駆動元と行き先
@@ -341,20 +350,35 @@ class Gate:
             P["y"] = (w, h / 2, "R")
         elif k == "mux":
             ni = len([p for p in n["pins"] if p.startswith("i")])
-            h = max(46, ni * 16 + 26)
-            w = 34
+            h = max(52, ni * 20 + 16)
+            w = 40
             for i in range(ni):
-                P[f"i{i}"] = (0, 12 + i * 16, "L")
-            P["s"] = (0, h - 8, "L")
-            P["y"] = (w, h / 2 - 4, "R")
+                P[f"i{i}"] = (0, h / 2 + (i - (ni - 1) / 2) * 20, "L")
+            # 選択信号は台形の下(s_side: top で上)から。斜めの辺の真ん中
+            if n["cell"].get("s_side") == "top":
+                P["s"] = (w / 2, 6 - 12, "T")
+            else:
+                P["s"] = (w / 2, h - 6 + 12, "B")
+            P["y"] = (w, h / 2, "R")
         elif k in ("dff", "latch"):
-            w, h = 60, 58
-            P["d"] = (0, 18, "L")
-            P["ck" if k == "dff" else "g"] = (0, 40, "L")
+            w, h = 44, 76                                # 縦長の長方形
+            P["d"] = (0, 20, "L")
+            P["ck" if k == "dff" else "g"] = (0, 54, "L")
             P["rn"] = (w / 2, h + 7.2, "B")              # 枠の下に丸(負論理)
             P["sn"] = (w / 2, -7.2, "T")                 # 枠の上に丸
-            P["q"] = (w, 18, "R")
-            P["qn"] = (w, 40, "R")
+            P["q"] = (w, 20, "R")
+            P["qn"] = (w, 54, "R")
+        elif k == "block":
+            ni = len([p for p in n["pins"] if p.startswith("i")])
+            no = len([p for p in n["pins"] if p.startswith("y")])
+            txt = n["cell"].get("text", n["label"])
+            h = max(40, max(ni, no) * 18 + 10)
+            w = max(54, wlen(txt) * 6.6 + 20)
+            for i in range(ni):
+                P[f"i{i}"] = (0, h / 2 + (i - (ni - 1) / 2) * 18, "L")
+            outs = [p for p in n["pins"] if p.startswith("y")]
+            for i, pn in enumerate(outs):
+                P[pn] = (w, h / 2 + (i - (len(outs) - 1) / 2) * 18, "R")
         elif k == "icg":
             w, h = 64, 62
             P["en"] = (0, 14, "L")
@@ -420,6 +444,10 @@ class Gate:
                 lvl[u] = 0
             elif lvl[u] == 0:
                 lvl[u] = 1                                 # 定数だけで動くセルは 1 列目
+        self.stage = {}
+        self.back = back
+        if self.stage_mode:
+            lvl = self.stage_levels(lvl)
         L = max([lvl[u] for u in N if N[u]["kind"] != "pin_out"] + [0]) + 1
         for u in N:
             if N[u]["kind"] == "pin_out":
@@ -520,10 +548,213 @@ class Gate:
                     t = w[u] if w[u] is not None else Y[u]
                     Y[u] = t if prev is None else max(t, Y[prev] + G[prev][1] + gap(prev, u))
                     prev = u
+        if self.stage:
+            self.snap_rows(Y, G, cols, want, gap)
+        for _ in range(3):                                 # ほかの網が動くと通れるようになることがあるので数回
+            self.straighten(Y, G, cols, lvl)
         mn = min(Y.values()) if Y else 0
         for u in Y:
             Y[u] -= mn
         self.Y = Y
+
+    def straighten(self, Y, G, cols, lvl):
+        """同じ網の中継点を同じ高さにそろえる(駆動元のピン、行き先のピンの高さのうち、通れる所)"""
+        N = self.nodes
+        chains = collections.defaultdict(list)
+        for (net, c), d in self.dummies.items():
+            chains[net].append(d)
+        for net, ds in chains.items():
+            a, apn = self.drv[net][0]
+            cands = [Y[a] + G[a][2][apn][1]]
+            for b, bpn in self.snk.get(net, []):
+                if bpn in G[b][2] and lvl[b] > lvl[ds[0]]:
+                    cands.append(Y[b] + G[b][2][bpn][1])
+            cands.append(sum(Y[d] for d in ds) / len(ds))
+            def free(y):
+                for d in ds:
+                    for u in cols[lvl[d]]:
+                        if u == d:
+                            continue
+                        top_, bot = Y[u], Y[u] + G[u][1]
+                        if N[u]["kind"] == "dummy":
+                            if abs(Y[u] - y) < 9:
+                                return False
+                        elif top_ - 20 < y < bot + (30 if "rn" in N[u]["pins"] else 8):
+                            return False
+                return True
+            for y in cands:
+                if free(y):
+                    for d in ds:
+                        Y[d] = y
+                    break
+
+    def snap_rows(self, Y, G, cols, want, gap):
+        """FF を行(同じ高さ)にそろえる。前の段の FF と同じ行を優先。その後 FF 以外を FF に合わせて置き直す"""
+        N, st = self.nodes, self.stage
+        ffs = sorted(st, key=lambda u: (st[u], Y[u]))
+        ROWH = max(G[u][1] for u in ffs) + 26 + 40
+        row = {}
+        used = collections.defaultdict(set)
+        def pred_row(u):
+            best = None
+            for pn in ("d",):
+                net = N[u]["pins"].get(pn, (None, None))[1]
+                stack, seen = [a for a, _ in self.drv.get(net, [])], set()
+                while stack:
+                    a = stack.pop()
+                    if a in seen:
+                        continue
+                    seen.add(a)
+                    if a in row and st.get(a, 0) < st[u]:
+                        if best is None or st[a] > st[best]:
+                            best = a
+                        continue
+                    if N[a]["kind"] not in ("dff", "pin_in"):
+                        for _, (d, x) in N[a]["pins"].items():
+                            if d == "in" and x:
+                                stack += [b for b, _ in self.drv.get(x, [])]
+            return row[best] if best else None
+        for u in ffs:
+            pr = pred_row(u)
+            pr = pr if pr is not None else round(Y[u] / ROWH)
+            r = min((r for r in range(0, len(ffs) + 4) if r not in used[st[u]]), key=lambda r: (abs(r - pr), r))
+            used[st[u]].add(r)
+            row[u] = r
+            Y[u] = r * ROWH
+        fixed = set(ffs)
+        # FF 以外: 欲しい高さに、固定した FF を避けて置く
+        for it in range(6):
+            rng = list(range(1, self.ncol)) if it % 2 == 0 else list(range(self.ncol - 2, -1, -1))
+            for c in rng:
+                sc = {c - 1, c + 1}
+                occ = [(Y[u], Y[u] + G[u][1], u) for u in cols[c] if u in fixed]
+                mov = [u for u in cols[c] if u not in fixed]
+                wv = {u: want(u, sc) for u in mov}
+                for u in sorted(mov, key=lambda u: wv[u] if wv[u] is not None else Y[u]):
+                    t = wv[u] if wv[u] is not None else Y[u]
+                    h = G[u][1]
+                    cands = [t] + [b + gap(v, u) for a, b, v in occ] + [a - gap(u, v) - h for a, b, v in occ]
+                    def ok(y):
+                        return all(y + h + gap(u, v) <= a or y >= b + gap(v, u) for a, b, v in occ)
+                    y = min((y for y in cands if ok(y)), key=lambda y: abs(y - t), default=t)
+                    Y[u] = y
+                    occ.append((y, y + h, u))
+        self.rows = row
+
+    # ---------- FF の段 ----------
+    def stage_levels(self, lvl0):
+        """FF の段(入力から数えて何個目の FF か)を求め、同じ段の FF を同じ列に、段どうしを等間隔に置く列番号を返す"""
+        N = self.nodes
+        ffs = [u for u in N if N[u]["kind"] == "dff"]
+        if not ffs:
+            return lvl0
+        def drivers(u):
+            out = []
+            for pn, (d, net) in N[u]["pins"].items():
+                if d == "in" and net and not is_const(net):
+                    out += [a for a, _ in self.drv.get(net, [])]
+            return out
+        memo, busy = {}, set()
+        def src(u):
+            """組み合わせのセル u の (元の段, 論理の深さ)"""
+            if u in memo:
+                return memo[u]
+            k = N[u]["kind"]
+            if k == "pin_in":
+                return (0, 0)
+            if k == "dff":
+                return (st.get(u, 1), 0)
+            if u in busy:
+                return (0, 0)
+            busy.add(u)
+            best = (0, 0)
+            for a in drivers(u):
+                s_, d_ = src(a)
+                cand = (s_, d_ + (0 if N[a]["kind"] in ("dff", "pin_in") else 0))
+                if cand[0] > best[0] or (cand[0] == best[0] and cand[1] > best[1]):
+                    best = cand
+            busy.discard(u)
+            r = (best[0], best[1] + 1)
+            memo[u] = r
+            return r
+        # FF の段: D に入る論理の元の FF の段 + 1。ループ(FF の出力が前の段へ戻る)は DFS で戻りの辺を見つけて除く
+        def cone_src(u):
+            out, seen = set(), set()
+            stack = list(drivers(u))
+            while stack:
+                a = stack.pop()
+                if a in seen:
+                    continue
+                seen.add(a)
+                if N[a]["kind"] in ("dff", "pin_in"):
+                    out.add(a)
+                else:
+                    stack += drivers(a)
+            return out
+        srcs = {u: cone_src(u) for u in ffs}
+        succ = collections.defaultdict(list)
+        for u in ffs:
+            for a in srcs[u]:
+                if N[a]["kind"] == "dff":
+                    succ[a].append(u)
+        order = [u for u in ffs if any(N[a]["kind"] == "pin_in" for a in srcs[u]) or not srcs[u]] + ffs
+        color, back = {}, set()
+        def dfs(u):
+            color[u] = 1
+            for v in succ[u]:
+                if color.get(v) == 1:
+                    back.add((u, v))
+                elif not color.get(v):
+                    dfs(v)
+            color[u] = 2
+        for u in order:
+            if not color.get(u):
+                dfs(u)
+        st = {}
+        def stage(u, busy=()):
+            if u in st:
+                return st[u]
+            k = 1
+            for a in srcs[u]:
+                if N[a]["kind"] == "dff" and (a, u) not in back and a not in busy:
+                    k = max(k, stage(a, busy + (u,)) + 1)
+            st[u] = k
+            return k
+        for u in ffs:
+            stage(u)
+        memo.clear()
+        comb = [u for u in N if N[u]["kind"] not in ("dff", "pin_in", "pin_out")]
+        D = max([src(u)[1] for u in comb] + [0])
+        P = D + 1                                          # 段の間隔(列の数)
+        lvl = {}
+        for u in N:
+            k = N[u]["kind"]
+            if k == "pin_in":
+                lvl[u] = 0
+            elif k == "dff":
+                lvl[u] = st[u] * P
+            elif k != "pin_out":
+                s_, d_ = src(u)
+                lvl[u] = s_ * P + d_
+        self.stage = st
+        self.stage_pitch = P
+        return lvl
+
+    def _ff_back(self, a, u):
+        """a → u が戻り(u の Q から a へ組み合わせ・FF をたどって行ける)か"""
+        N = self.nodes
+        seen, stack = set(), [u]
+        while stack:
+            x = stack.pop()
+            for pn, (d, net) in N[x]["pins"].items():
+                if d == "out" and net:
+                    for b, _ in self.snk.get(net, []):
+                        if b == a:
+                            return True
+                        if b not in seen and N[b]["kind"] not in ("pin_out",):
+                            seen.add(b)
+                            stack.append(b)
+        return False
 
     # ---------- 配線(列の間の通路) ----------
     def route(self):
@@ -597,6 +828,20 @@ class Gate:
         for c in range(self.ncol):
             X.append(x)
             x += colw[c] + (chw[c] if c < self.ncol - 1 else 0)
+        if self.stage:
+            P = self.stage_pitch
+            S = max(self.stage.values())
+            fc = [k * P for k in range(1, S + 1) if k * P < self.ncol]
+            if len(fc) > 1:
+                pitch = max(X[fc[i + 1]] - X[fc[i]] for i in range(len(fc) - 1))
+                X2 = list(X)
+                for i, c0 in enumerate(fc):
+                    base = X[fc[0]] + i * pitch
+                    nxt = fc[i + 1] if i + 1 < len(fc) else self.ncol
+                    for c in range(c0, nxt):
+                        X2[c] = base + (X[c] - X[c0])
+                x = X2[-1] + colw[-1]
+                X = X2
         self.X, self.colw, self.chw, self.tracks, self.parts = X, colw, chw, tracks, parts
         self.LANE0 = LANE0
         self.Wtot = x + 30
@@ -674,11 +919,13 @@ class Gate:
             if k in ("nor", "xnor"):
                 o.append(bubble(x0 + c + 3.6, y + h / 2))
         elif k == "mux":
-            o.append(f'<path d="M{f(x)},{f(y)} L{f(x + w)},{f(y + 10)} L{f(x + w)},{f(y + h - 18)} L{f(x)},{f(y + h)} Z" {S}/>')
+            o.append(f'<path d="M{f(x)},{f(y)} L{f(x + w)},{f(y + 12)} L{f(x + w)},{f(y + h - 12)} L{f(x)},{f(y + h)} Z" {S}/>')
             ni = len([p for p in P if p.startswith("i")])
-            for i in range(ni):
-                o.append(f'<text x="{f(x + 4)}" y="{f(y + P[f"i{i}"][1] + 3.5)}" font-size="9" fill="{GRAY}">{i}</text>')
-            o.append(f'<text x="{f(x + 4)}" y="{f(y + P["s"][1] + 3.5)}" font-size="9" fill="{GRAY}">S</text>')
+            for i in range(ni):                          # 台形の中、各入力の横に 0 / 1
+                o.append(f'<text x="{f(x + 7)}" y="{f(y + P[f"i{i}"][1] + 4)}" font-size="11" font-weight="800" fill="{INK}">{i}</text>')
+            sx, sy, sd = P["s"]
+            ye = y + (h - 6 if sd == "B" else 6)        # 斜めの辺の上の点
+            o.append(f'<path d="M{f(x + sx)},{f(y + sy)} L{f(x + sx)},{f(ye)}" stroke="{INK}" stroke-width="1.5"/>')
         elif k in ("dff", "latch"):
             o.append(f'<rect x="{f(x)}" y="{f(y)}" width="{w}" height="{h}" rx="2" {S}/>')
             used = n["pins"]
@@ -700,6 +947,10 @@ class Gate:
                          f'<text x="{f(x + w / 2)}" y="{f(y + 11)}" font-size="9" fill="{RST_C}" text-anchor="middle">S</text>')
             if k == "latch":
                 o.append(f'<text x="{f(x + w / 2)}" y="{f(y + 11)}" font-size="8.5" fill="{GRAY}" text-anchor="middle">LAT</text>')
+        elif k == "block":
+            txt = n["cell"].get("text", n["label"])
+            o.append(f'<rect x="{f(x)}" y="{f(y)}" width="{f(w)}" height="{f(h)}" rx="8" {S}/>'
+                     f'<text x="{f(x + w / 2)}" y="{f(y + h / 2 + 4)}" font-size="11.5" font-weight="700" fill="{INK}" text-anchor="middle">{esc(txt)}</text>')
         elif k == "icg":
             o.append(f'<rect x="{f(x)}" y="{f(y)}" width="{w}" height="{h}" rx="3" {S}/>'
                      f'<text x="{f(x + w / 2 + 4)}" y="{f(y + h / 2 + 4)}" font-size="11" font-weight="800" fill="{INK}" text-anchor="middle">ICG</text>')
@@ -708,7 +959,7 @@ class Gate:
                     o.append(f'<text x="{f(x + 5)}" y="{f(y + P[pn][1] + 3.5)}" font-size="8.5" fill="{GRAY}">{lab}</text>')
             o.append(f'<text x="{f(x + w - 4)}" y="{f(y + P["y"][1] - 5)}" font-size="8.5" fill="{GRAY}" text-anchor="end">GCK</text>')
         if k not in ("pin_in", "pin_out", "dummy"):
-            nm = n["label"]
+            nm = n["label"] if not (k == "block" and not n["cell"].get("text")) else ""
             up = 14 if "sn" in n["pins"] else 0
             dn = 26 if "rn" in n["pins"] else 0
             o.append(f'<text class="h" x="{f(x + w / 2)}" y="{f(y - 5 - up)}" font-size="9.5" fill="{GRAY}" text-anchor="middle">{esc(nm)}</text>')
@@ -749,10 +1000,11 @@ class Gate:
         self.route()
         N, Y = self.nodes, self.Y
         ttl = self.s.get("title", "ゲートレベル図")
-        self.top = 70 + (22 if self.s.get("note") else 0) + (16 if self.s.get("groups") else 0) + self.nlanes * 14 + (20 if self.nlanes else 0)
+        self.top = 70 + (22 if self.s.get("note") else 0) + (16 if self.s.get("groups") else 0) + self.nlanes * 14 + (20 if self.nlanes else 0) \
+            + (30 if self.stage else 0)
         cell_bot = max([Y[u] + self.G[u][1] + (26 if "rn" in N[u]["pins"] else 0) for u in N] + [0]) + self.top
         rails = sorted(self.rail, key=lambda n: (n not in self.clk, n))
-        H = cell_bot + 40 + len(rails) * 16 + 70
+        H = cell_bot + 40 + len(rails) * 16 + 70 + (18 if self.stage else 0)
         W = max(self.Wtot, wlen(ttl) * 8.6 + 40, wlen(self.s.get("note", "")) * 5.8 + 40, 820)
         groups = self.s.get("groups", [])
         o = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {f(W)} {f(H)}" font-family="\'Noto Sans JP\',sans-serif">'
@@ -771,10 +1023,20 @@ class Gate:
             y1 = max(Y[u] + self.G[u][1] + (26 if "rn" in N[u]["pins"] else 0) for u in us) + self.top + 20
             col = g.get("color", "#16a34a")
             o.append(f'<rect x="{f(x0)}" y="{f(y0)}" width="{f(x1 - x0)}" height="{f(y1 - y0)}" rx="6" fill="{col}" fill-opacity=".05" '
-                     f'stroke="{col}" stroke-width="1.3" stroke-dasharray="6 3"/><text x="{f(x0 + 6)}" y="{f(y1 - 6)}" font-size="10.5" '
+                     f'stroke="{col}" stroke-width="1.3" stroke-dasharray="6 3"/><text class="h" x="{f(x0 + 6)}" y="{f(y1 + 14)}" font-size="10.5" '
                      f'font-weight="700" fill="{col}">{esc(g.get("label", ""))}</text>')
-        # 配線
+        # FF の段: 列の上に見出し、薄い縦の案内線
         top = self.top
+        if self.stage:
+            ffy = min(Y[u] for u in self.stage) + top
+            P = self.stage_pitch
+            for k in sorted(set(self.stage.values())):
+                c = k * P
+                if c >= self.ncol:
+                    continue
+                xc = self.X[c] + self.colw[c] / 2
+                o.append(f'<line x1="{f(xc)}" y1="{f(ffy - 30)}" x2="{f(xc)}" y2="{f(H - 90)}" stroke="#e2e8f0" stroke-width="1.2" stroke-dasharray="4 4"/>'
+                         f'<text class="h" x="{f(xc)}" y="{f(ffy - 36)}" font-size="11.5" font-weight="800" fill="#0f766e" text-anchor="middle">{k}段目</text>')
         lane_base = top - 30                               # 戻りのレーンは図の上(セルより上)
         def Yp(pt):
             if pt[0] == "lane":
@@ -803,6 +1065,10 @@ class Gate:
                         continue
                     x1 = self.px(*p)
                     path += f"M{f(tx)},{f(Yp(p))} L{f(x1)},{f(Yp(p))} "
+                    sd = self.G[p[0]][2][p[1]][2] if p[1] in self.G[p[0]][2] else "L"
+                    if sd in ("B", "T"):                     # ピンの先(台形の辺)まで縦に
+                        edge = Yp(p) + (-12 if sd == "B" else 12)
+                        path += f"M{f(x1)},{f(Yp(p))} L{f(x1)},{f(edge)} "
                 if max(ys) - min(ys) > .5:
                     path += f"M{f(tx)},{f(min(ys))} L{f(tx)},{f(max(ys))}"
                 wires.append(f'<path d="{path}" fill="none" stroke="{col}" stroke-width="{sw}" stroke-linejoin="round"/>')
@@ -912,6 +1178,28 @@ class Gate:
         for u in N:
             if N[u]["kind"] != "dummy":
                 o.append(self.sym(u))
+        # 出力端子: 何段目の FF から出ているか(入力からのクロック数の目安)
+        if self.stage:
+            for u in N:
+                if N[u]["kind"] != "pin_out":
+                    continue
+                net = N[u]["pins"]["a"][1]
+                stack, seen, best = [a for a, _ in self.drv.get(net, [])], set(), 0
+                while stack:
+                    a = stack.pop()
+                    if a in seen:
+                        continue
+                    seen.add(a)
+                    if a in self.stage:
+                        best = max(best, self.stage[a])
+                        continue
+                    if N[a]["kind"] != "pin_in":
+                        for _, (d, x) in N[a]["pins"].items():
+                            if d == "in" and x:
+                                stack += [b for b, _ in self.drv.get(x, [])]
+                if best:
+                    o.append(f'<text class="h" x="{f(self.ox(u) + self.G[u][0] / 2)}" y="{f(Y[u] + top - 6)}" font-size="10" font-weight="700" '
+                             f'fill="#0f766e" text-anchor="middle">FF {best} 段</text>')
         # 凡例: クロック
         lx, ly = 14, H - 40
         items = [(r, c_) for r, c_ in {v for v in self.clk_root.values()}]
@@ -927,6 +1215,9 @@ class Gate:
             what = "・".join(([] if self.show_clk else ["クロック"]) + ([] if self.show_rst or not self.rst else ["リセット"]))
             legend.append(f'<tspan fill="{GRAY}">{what}の配線は省略(端子の網名でつながる)</tspan>')
         o.append(f'<text x="{lx}" y="{f(ly)}" font-size="11">' + "  ".join(legend) + '</text>')
+        if self.stage:
+            o.append(f'<text x="{lx}" y="{f(ly - 18)}" font-size="10.5" fill="#0f766e">FF は段ごとに等間隔の列・前の段と同じ高さにそろえる'
+                     f'(n段目 = 入力から n 個目の FF。段数がレイテンシの目安。ループで前の段へ戻る線は上を回る)</text>')
         o.append(f'<text x="{lx}" y="{f(ly + 18)}" font-size="10.5" fill="{GRAY}">FF の三角 = クロック端子(丸付き = 立ち下がり)/ 丸 = 負論理 / '
                  f'ICG = クロックゲート(EN をラッチして CK と AND、TE = テスト時に開ける)/ 黒丸 = 分岐 / 上を回る線 = 戻りの接続</text>')
         o.append("</svg>")

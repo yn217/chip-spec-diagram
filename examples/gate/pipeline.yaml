@@ -1,0 +1,24 @@
+title: 3 段のパイプライン(積和)
+note: 入力を 1 段目で取り込み、2 段目で乗算、3 段目で加算して出す。valid も同じ段数で送る(入力から 3 クロック後に出力)
+ports:
+  - {id: a, dir: in}
+  - {id: b, dir: in}
+  - {id: c, dir: in}
+  - {id: valid_in, dir: in}
+  - {id: clk, dir: in}
+  - {id: rst_n, dir: in}
+  - {id: y, dir: out}
+  - {id: valid_out, dir: out}
+nets: {a: 16, b: 16, c: 32, ra: 16, rb: 16, rc: 32, p: 32, rp: 32, rc2: 32, s: 32, y: 32}
+cells:
+  - {id: r_a, type: dff, d: a, ck: clk, rn: rst_n, q: ra, label: "a_q[15:0]"}
+  - {id: r_b, type: dff, d: b, ck: clk, rn: rst_n, q: rb, label: "b_q[15:0]"}
+  - {id: r_c, type: dff, d: c, ck: clk, rn: rst_n, q: rc, label: "c_q[31:0]"}
+  - {id: r_v1, type: dff, d: valid_in, ck: clk, rn: rst_n, q: v1, label: v1}
+  - {id: u_mul, type: block, label: 乗算器, in: [ra, rb], out: p}
+  - {id: r_p, type: dff, d: p, ck: clk, rn: rst_n, q: rp, label: "p_q[31:0]"}
+  - {id: r_c2, type: dff, d: rc, ck: clk, rn: rst_n, q: rc2, label: "c_q2[31:0]"}
+  - {id: r_v2, type: dff, d: v1, ck: clk, rn: rst_n, q: v2, label: v2}
+  - {id: u_add, type: block, label: 加算器, in: [rp, rc2], out: s}
+  - {id: r_y, type: dff, d: s, ck: clk, rn: rst_n, q: y, label: "y_q[31:0]"}
+  - {id: r_v3, type: dff, d: v2, ck: clk, rn: rst_n, q: valid_out, label: v3}
