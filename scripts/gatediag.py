@@ -645,8 +645,10 @@ class Gate:
             off = 6 if k in ("xor", "xnor") else 0
             bw = w - (8 if k in ("nor", "xnor") else 0)
             x0 = x + off
-            o.append(f'<path d="M{f(x0)},{f(y)} Q{f(x0 + 12)},{f(y + h / 2)} {f(x0)},{f(y + h)} Q{f(x0 + (bw - off) * .62)},{f(y + h)} '
-                     f'{f(x + bw)},{f(y + h / 2)} Q{f(x0 + (bw - off) * .62)},{f(y)} {f(x0)},{f(y)} Z" {S}/>')
+            L_ = x + bw - x0                             # 先は鈍く(接線を立てて丸みのある先端に)
+            o.append(f'<path d="M{f(x0)},{f(y)} Q{f(x0 + 12)},{f(y + h / 2)} {f(x0)},{f(y + h)} '
+                     f'C{f(x0 + L_ * .5)},{f(y + h)} {f(x0 + L_ * .97)},{f(y + h * .74)} {f(x + bw)},{f(y + h / 2)} '
+                     f'C{f(x0 + L_ * .97)},{f(y + h * .26)} {f(x0 + L_ * .5)},{f(y)} {f(x0)},{f(y)} Z" {S}/>')
             if off:
                 o.append(f'<path d="M{f(x)},{f(y)} Q{f(x + 12)},{f(y + h / 2)} {f(x)},{f(y + h)}" fill="none" stroke="{INK}" stroke-width="1.6"/>')
             if k in ("nor", "xnor"):

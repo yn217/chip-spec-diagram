@@ -578,7 +578,8 @@ class ResetTree:
             k = len([s for s in d.get("sources", []) if s in self.sid])
             if k > 1:
                 o.append(f'<path d="M{f(gx)},{f(gy)} Q{f(gx + gw * .32)},{f(gy + gh / 2)} {f(gx)},{f(gy + gh)} '
-                         f'Q{f(gx + gw * .72)},{f(gy + gh)} {f(gx + gw)},{f(gy + gh / 2)} Q{f(gx + gw * .72)},{f(gy)} {f(gx)},{f(gy)} Z" '
+                         f'C{f(gx + gw * .5)},{f(gy + gh)} {f(gx + gw * .97)},{f(gy + gh * .74)} {f(gx + gw)},{f(gy + gh / 2)} '
+                         f'C{f(gx + gw * .97)},{f(gy + gh * .26)} {f(gx + gw * .5)},{f(gy)} {f(gx)},{f(gy)} Z" '
                          f'fill="#fff" stroke="{INK}" stroke-width="1.6"/>')
                 ow.append(f'<path d="M{f(gx + gw)},{f(cyd)} L{f(X_SY)},{f(cyd)}" stroke="{INK}" stroke-width="1.6" fill="none" marker-end="url(#rsa)"/>')
             else:
