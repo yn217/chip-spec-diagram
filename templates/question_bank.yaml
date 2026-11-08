@@ -439,6 +439,17 @@ items:
     assume: 仮置きで進める
     priority: 33
     modes: [concept, rtl, mixed]
+  - id: dataflow_paths
+    category: データフロー
+    q: 検討したいデータの流れは？(どの辺のどの端子から入り、どの SRAM・演算器へ届くか、帯域)。PHY を置く辺と、主なブロックの大まかな位置は決まっていますか？
+    free: true
+    options:
+      - {label: 決まっている, description: 入口・行き先・帯域・配置を入力}
+      - {label: 仮置きで進める, description: バス構成図の配置と端子の辺から描く}
+    effect: データフロー検討図(dataflowfp.py)の矢印・表、[帯域] [距離] のチェック
+    assume: 仮置きで進める
+    priority: 30
+    modes: [concept, rtl, mixed]
   - id: bandwidth
     category: 帯域
     q: 外部IF・主要経路の帯域(規格・レーン数・メモリ幅)は？

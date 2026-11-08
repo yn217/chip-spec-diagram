@@ -180,6 +180,11 @@ def build(spec_path, out, decisions=None, floorplan=None, board=None):
             parts.append(f"<h2>リセット系統図</h2><div class='frame'>{svg_rt}</div>"
                          + (f"<div class='tw'><table><tr><th>ドメイン</th><th>ドメイン</th><th>リセットをまたぐ接続(RDC)</th><th>対策</th></tr>{tr}</table></div>" if tr else "")
                          + (f"<div class='warn'>{esc(chr(10).join(rt.warn))}</div>" if rt.warn else ""))
+    if spec.get("dataflow_floorplan"):
+        import dataflowfp
+        df = dataflowfp.DataflowFP(c)
+        parts.append(f"<h2>データフロー検討図</h2><div class='frame'>{df.svg()}</div>"
+                     + (f"<div class='warn'>{esc(chr(10).join(df.warn))}</div>" if df.warn else ""))
     if floorplan:
         from floorplan import FP
         fspec = yaml.safe_load(open(floorplan, encoding="utf-8"))

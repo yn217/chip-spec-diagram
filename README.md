@@ -14,6 +14,7 @@
 | ブロック間の接続図(中心のブロックと接続元・接続先、端子の入出力・幅) | `diagrams/block-interface/GUIDE.md` | `examples/interface_npu.yaml` |
 | 動作のストーリーボード(ステップ・レイテンシ目安) | `diagrams/storyboard/GUIDE.md` | `examples/npu_soc.yaml` `examples/latency_demo.yaml` |
 | クロック系統図(MUX・分周・ゲート・DVFS、CDC と比率同期) | `diagrams/clock-tree/GUIDE.md` | `examples/product_soc.yaml` `examples/npu_soc.yaml` |
+| データフロー検討図(フロアプラン風) | `diagrams/dataflow-floorplan/GUIDE.md` | `examples/npu_soc.yaml` |
 | フロアプラン・ボード配置 | バス構成図の G4 | `examples/floorplan.yaml` `examples/board.yaml` |
 | リセット系統図(解除シーケンス・RDC) | `diagrams/reset-tree/GUIDE.md` | `examples/npu_soc.yaml` `examples/product_soc.yaml` |
 | ゲートレベル図(リセット同期化・クロック切替・ICG など) | `diagrams/gate-level/GUIDE.md` | `examples/gate/*.yaml` |
@@ -44,6 +45,7 @@
 | `board.py` | ボード配置とIOの辺の推奨、論理図・フロアプランとの突き合わせ |
 | `resettree.py` | リセット系統図(源・OR・同期化・ドメイン・解除シーケンス・RDC のチェック) |
 | `gatediag.py` | ゲートレベル図(標準記号で自動配置・配線、構造記述ネットリストの読み込み、未接続・ループ・ゲーテッドクロック・CDC のチェック) |
+| `dataflowfp.py` | データフロー検討図(フロアプラン風の配置に、辺の端子 → PHY → バス → 行き先の流れ、距離・帯域の表) |
 | `storyboard.py` | 動作説明のストーリーボード(構成図を使い回し、ステップごとのコマを 1 枚に並べる) |
 | `ifdiag.py` | ブロック間の接続図(YAML または RTL から。AXI/APB の束ね、lint、SVG/PNG/draw.io) |
 | `memmap.py` `reach.py` `addrmap.py` | メモリマップの図と表、マスタごとの到達性・ループの検査 |

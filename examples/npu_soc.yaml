@@ -236,3 +236,16 @@ resets:
      isolation: true}
   - {id: rst_eth, label: eth, sources: [por, rst_n, wdt, sw_eth], clock_domain: eth_clk, sync: 2, after: [rst_sys],
      isolation: true}
+dataflow_floorplan:             # データフロー検討用のフロアプラン風の図(dataflowfp.py)
+  title: NPU-SoC データフロー検討(案A)
+  die: [10, 7]
+  max_mm: 14
+  phy:
+    pcie: {label: PCIe PHY}
+    ddrc: {label: DDR PHY}
+    eth: {label: 10G SerDes}
+  flows:
+    - {label: 重み・入力の書き込み, from: host, to: dram, bw: 8GB/s}
+    - {label: DMA で Local Buf へ, from: dram, to: lbuf, bw: 25.6GB/s}
+    - {label: 結果をホストへ, from: lbuf, to: host, bw: 8GB/s}
+    - {label: ネットワークから SRAM, from: net, to: sram, bw: 1.25GB/s}
