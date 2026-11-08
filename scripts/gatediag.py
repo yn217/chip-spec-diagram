@@ -22,7 +22,9 @@ gate.yaml:
   groups:                               # 説明用の囲み(任意)
     - {label: 同期化 2 段, cells: [ff1, ff2]}
   "0" / "1" はタイ(定数)。cell に label(表示名)・note(注記)を書ける。
-  symbols: ansi(既定: IEEE Std 91 / MIL-STD-806 の形。OR の前は半径 = 高さの円弧 2 つ)| iec(IEC 60617-12 の四角に &・≥1・=1・1)
+  記号は IEEE Std 91 / MIL-STD-806 の形(OR の前は半径 = 高さの円弧 2 つ)。
+  wires: {clock: false, reset: false}   # 既定はクロック・リセットの配線を描かず、端子に網名を書く。true で描く
+                                        # (描く時は下に水平の幹線を引き、縦に上げて短い水平で端子へ。--clock-wires / --reset-wires)
 
 配置: 左から右へ信号の流れ順に列を作り(長い接続は中継点を入れる)、列の間の通路に縦の幹線を引く。戻りの接続は上を回る。
 クロックの網は色分け(元の端子ごと)、リセットの網は茶色。
@@ -56,9 +58,12 @@ def cval(n):
 
 
 class Gate:
-    def __init__(self, spec, symbols=None):
+    def __init__(self, spec, clock_wires=None, reset_wires=None):
         self.s = spec
-        self.iec = (symbols or spec.get("symbols", "ansi")) == "iec"    # ansi = IEEE Std 91 の形 / iec = IEC 60617 の四角
+        w = spec.get("wires", {}) or {}
+        # クロック・リセットの配線は既定では描かず、端子に網名を書く(必要な時だけ描く)
+        self.show_clk = bool(w.get("clock", False) if clock_wires is None else clock_wires)
+        self.show_rst = bool(w.get("reset", False) if reset_wires is None else reset_wires)
         self.warn, self.info = [], []
         self.width = {k: int(v) for k, v in (spec.get("nets") or {}).items()}
         self.nodes = {}            # id -> node
@@ -325,9 +330,7 @@ class Gate:
         elif k in GATES:
             ni = len([p for p in n["pins"] if p.startswith("i")])
             h = max(36, ni * 14 + 8)
-            if self.iec:
-                w = 40
-            elif k in ("and", "nand"):
+            if k in ("and", "nand"):
                 w = h                                    # IEEE Std 91: 奥行き = 高さ(直線 h/2 + 半円)
             else:
                 w = OR_C * h + (OR_X * h if k in ("xor", "xnor") else 0)   # 前は半径 h の円弧 2 つ
@@ -345,13 +348,13 @@ class Gate:
             P["s"] = (0, h - 8, "L")
             P["y"] = (w, h / 2 - 4, "R")
         elif k in ("dff", "latch"):
-            w, h = 60, 72
-            P["sn"] = (0, 10, "L")
-            P["d"] = (0, 24, "L")
-            P["ck" if k == "dff" else "g"] = (0, 44, "L")
-            P["rn"] = (0, 62, "L")
-            P["q"] = (w, 24, "R")
-            P["qn"] = (w, 52, "R")
+            w, h = 60, 58
+            P["d"] = (0, 18, "L")
+            P["ck" if k == "dff" else "g"] = (0, 40, "L")
+            P["rn"] = (w / 2, h + 7.2, "B")              # 枠の下に丸(負論理)
+            P["sn"] = (w / 2, -7.2, "T")                 # 枠の上に丸
+            P["q"] = (w, 18, "R")
+            P["qn"] = (w, 40, "R")
         elif k == "icg":
             w, h = 64, 62
             P["en"] = (0, 14, "L")
@@ -377,7 +380,10 @@ class Gate:
                     if a != b:
                         succ[a].add(b)
         # 戻りの辺を DFS で見つけて除く(入力端子から)
-        order = [n for n in N if N[n]["kind"] == "pin_in"] + [n for n in N if N[n]["kind"] != "pin_in"]
+        rl = getattr(self, "rail", set())
+        order = [n for n in N if N[n]["kind"] == "pin_in" and N[n]["pins"]["y"][1] not in rl] + \
+                [n for n in N if N[n]["kind"] == "pin_in" and N[n]["pins"]["y"][1] in rl] + \
+                [n for n in N if N[n]["kind"] != "pin_in"]
         color, back = {}, set()
         def dfs(u):
             color[u] = 1
@@ -391,7 +397,7 @@ class Gate:
         for u in order:
             if not color.get(u):
                 dfs(u)
-        lvl = {u: 0 for u in N}
+        lvl = {u: (0 if N[u]["kind"] == "pin_in" else 1) for u in N}   # 前のないセルは 1 列目から数える
         indeg = collections.Counter()
         for u in N:
             for v in succ[u]:
@@ -473,9 +479,11 @@ class Gate:
         Y = {}
         GAP, DGAP = 30, 12
         def gap(a, b):                                    # 下に来るのがセルなら名前の分をあける
+            extra = (26 if "rn" in N[a]["pins"] else 0) + (14 if "sn" in N[b]["pins"] else 0) + \
+                    (14 if N[a].get("cell", {}).get("note") else 0)
             if N[b]["kind"] == "dummy":
-                return DGAP if N[a]["kind"] == "dummy" else 16
-            return GAP
+                return (DGAP if N[a]["kind"] == "dummy" else 16) + extra
+            return GAP + extra
         for c in range(self.ncol):
             y = 0
             for u in cols[c]:
@@ -584,7 +592,7 @@ class Gate:
                 else:
                     ends.append(hi)
                     tracks[(c, net)] = len(ends) - 1
-            chw.append(max(44, len(ends) * 11 + 30))
+            chw.append(max(44, len(ends) * 11 + 30) + (16 if getattr(self, "rail", None) else 0))
         X, x = [], 30
         for c in range(self.ncol):
             X.append(x)
@@ -639,25 +647,11 @@ class Gate:
             o.append(f'<path d="M{f(x)},{f(y + h / 2)} L{f(x + 10)},{f(y)} L{f(x + w)},{f(y)} L{f(x + w)},{f(y + h)} L{f(x + 10)},{f(y + h)} Z" '
                      f'fill="#f1f5f9" stroke="{INK}" stroke-width="1.4"/><text x="{f(x + 16)}" y="{f(y + 14)}" font-size="11" '
                      f'font-weight="700" fill="{INK}">{esc(n["label"])}</text>')
-        elif k in ("not", "buf") and self.iec:
-            bw = w - (8 if k == "not" else 0)
-            o.append(f'<rect x="{f(x)}" y="{f(y)}" width="{f(bw)}" height="{f(h)}" {S}/>'
-                     f'<text x="{f(x + bw / 2)}" y="{f(y + h / 2 + 4)}" font-size="12" font-weight="700" fill="{INK}" text-anchor="middle">1</text>')
-            if k == "not":
-                o.append(bubble(x + bw + 3.6, y + h / 2))
         elif k in ("not", "buf"):
             tw = w - (8 if k == "not" else 0)
             o.append(f'<path d="M{f(x)},{f(y)} L{f(x + tw)},{f(y + h / 2)} L{f(x)},{f(y + h)} Z" {S}/>')
             if k == "not":
                 o.append(bubble(x + tw + 3.6, y + h / 2))
-        elif k in GATES and self.iec and k not in ("not", "buf"):
-            inv = k in ("nand", "nor", "xnor")
-            bw = w - (8 if inv else 0)
-            lab = {"and": "&", "nand": "&", "or": "≥1", "nor": "≥1", "xor": "=1", "xnor": "=1"}[k]
-            o.append(f'<rect x="{f(x)}" y="{f(y)}" width="{f(bw)}" height="{f(h)}" {S}/>'
-                     f'<text x="{f(x + bw / 2)}" y="{f(y + 15)}" font-size="12" font-weight="700" fill="{INK}" text-anchor="middle">{esc(lab)}</text>')
-            if inv:
-                o.append(bubble(x + bw + 3.6, y + h / 2))
         elif k in ("and", "nand"):
             bw = w - (8 if k == "nand" else 0)
             r = h / 2
@@ -698,15 +692,14 @@ class Gate:
                 o.append(f'<path d="M{f(x)},{f(cy_ - 6)} L{f(x + 9)},{f(cy_)} L{f(x)},{f(cy_ + 6)}" fill="none" stroke="{INK}" stroke-width="1.3"/>')
                 if n["cell"].get("edge") == "neg":
                     o.append(f'<circle cx="{f(x - 3.6)}" cy="{f(cy_)}" r="3.4" {S}/>')
-            for pn, lab in (("rn", "RN"), ("sn", "SN")):
-                if pn in used:
-                    dy = P[pn][1]
-                    o.append(f'<text x="{f(x + 6)}" y="{f(y + dy + 3.5)}" font-size="9" fill="{RST_C}">{lab}</text>'
-                             f'<circle cx="{f(x - 3.6)}" cy="{f(y + dy)}" r="3.4" {S}/>')
-            if n["cell"].get("edge") == "neg" and k == "dff":
-                pass
-            o.append(f'<text x="{f(x + w / 2)}" y="{f(y + h - 4)}" font-size="8.5" fill="{GRAY}" text-anchor="middle">'
-                     f'{"FF" if k == "dff" else "LAT"}</text>')
+            if "rn" in used:
+                o.append(f'<circle cx="{f(x + w / 2)}" cy="{f(y + h + 3.6)}" r="3.4" {S}/>'
+                         f'<text x="{f(x + w / 2)}" y="{f(y + h - 5)}" font-size="9" fill="{RST_C}" text-anchor="middle">R</text>')
+            if "sn" in used:
+                o.append(f'<circle cx="{f(x + w / 2)}" cy="{f(y - 3.6)}" r="3.4" {S}/>'
+                         f'<text x="{f(x + w / 2)}" y="{f(y + 11)}" font-size="9" fill="{RST_C}" text-anchor="middle">S</text>')
+            if k == "latch":
+                o.append(f'<text x="{f(x + w / 2)}" y="{f(y + 11)}" font-size="8.5" fill="{GRAY}" text-anchor="middle">LAT</text>')
         elif k == "icg":
             o.append(f'<rect x="{f(x)}" y="{f(y)}" width="{w}" height="{h}" rx="3" {S}/>'
                      f'<text x="{f(x + w / 2 + 4)}" y="{f(y + h / 2 + 4)}" font-size="11" font-weight="800" fill="{INK}" text-anchor="middle">ICG</text>')
@@ -716,9 +709,11 @@ class Gate:
             o.append(f'<text x="{f(x + w - 4)}" y="{f(y + P["y"][1] - 5)}" font-size="8.5" fill="{GRAY}" text-anchor="end">GCK</text>')
         if k not in ("pin_in", "pin_out", "dummy"):
             nm = n["label"]
-            o.append(f'<text class="h" x="{f(x + w / 2)}" y="{f(y - 5)}" font-size="9.5" fill="{GRAY}" text-anchor="middle">{esc(nm)}</text>')
+            up = 14 if "sn" in n["pins"] else 0
+            dn = 26 if "rn" in n["pins"] else 0
+            o.append(f'<text class="h" x="{f(x + w / 2)}" y="{f(y - 5 - up)}" font-size="9.5" fill="{GRAY}" text-anchor="middle">{esc(nm)}</text>')
             if n["cell"].get("note"):
-                o.append(f'<text class="h" x="{f(x + w / 2)}" y="{f(y + h + 13)}" font-size="9.5" fill="#7c3aed" text-anchor="middle">'
+                o.append(f'<text class="h" x="{f(x + w / 2)}" y="{f(y + h + 13 + dn)}" font-size="9.5" fill="#7c3aed" text-anchor="middle">'
                          f'{esc(n["cell"]["note"])}</text>')
             # タイ(定数)
             for pn, (d, net) in n["pins"].items():
@@ -732,12 +727,32 @@ class Gate:
     # ---------- 図 ----------
     def svg(self):
         self.check()
+        N0, D0, S0 = self.nodes, self.drv, self.snk
+        # クロックの分配網(FF/ラッチ/ICG のクロック端子へ行く網)とリセットの網は、通路では引かない
+        dist = {net for net in self.clk if any(N0[b]["kind"] in ("dff", "latch", "icg") and pn in ("ck", "g")
+                                                for b, pn in S0.get(net, []))}
+        special = dist | set(self.rst)
+        hide = (set() if self.show_clk else dist) | (set() if self.show_rst else set(self.rst))
+        self.hide, self.rail = hide, special - hide
+        self.drv = {k: v for k, v in D0.items() if k not in special}
+        self.snk = {k: v for k, v in S0.items() if k not in special}
+        N = {k: v for k, v in N0.items()
+             if not (v["kind"] == "pin_in" and v["pins"]["y"][1] in hide) and not (v["kind"] == "pin_out" and v["pins"]["a"][1] in hide)}
+        self.nodes = N
+        try:
+            return self._svg(N0, D0, S0)
+        finally:
+            self.nodes, self.drv, self.snk = N0, D0, S0
+
+    def _svg(self, N0, D0, S0):
         self.layout()
         self.route()
         N, Y = self.nodes, self.Y
         ttl = self.s.get("title", "ゲートレベル図")
         self.top = 70 + (22 if self.s.get("note") else 0) + (16 if self.s.get("groups") else 0) + self.nlanes * 14 + (20 if self.nlanes else 0)
-        H = max([Y[u] + self.G[u][1] for u in N] + [0]) + self.top + 80
+        cell_bot = max([Y[u] + self.G[u][1] + (26 if "rn" in N[u]["pins"] else 0) for u in N] + [0]) + self.top
+        rails = sorted(self.rail, key=lambda n: (n not in self.clk, n))
+        H = cell_bot + 40 + len(rails) * 16 + 70
         W = max(self.Wtot, wlen(ttl) * 8.6 + 40, wlen(self.s.get("note", "")) * 5.8 + 40, 820)
         groups = self.s.get("groups", [])
         o = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {f(W)} {f(H)}" font-family="\'Noto Sans JP\',sans-serif">'
@@ -753,7 +768,7 @@ class Gate:
             x0 = min(self.ox(u) for u in us) - 14
             x1 = max(self.ox(u) + self.G[u][0] for u in us) + 14
             y0 = min(Y[u] for u in us) + self.top - 24
-            y1 = max(Y[u] + self.G[u][1] for u in us) + self.top + 20
+            y1 = max(Y[u] + self.G[u][1] + (26 if "rn" in N[u]["pins"] else 0) for u in us) + self.top + 20
             col = g.get("color", "#16a34a")
             o.append(f'<rect x="{f(x0)}" y="{f(y0)}" width="{f(x1 - x0)}" height="{f(y1 - y0)}" rx="6" fill="{col}" fill-opacity=".05" '
                      f'stroke="{col}" stroke-width="1.3" stroke-dasharray="6 3"/><text x="{f(x0 + 6)}" y="{f(y1 - 6)}" font-size="10.5" '
@@ -815,6 +830,69 @@ class Gate:
             col = self.ncol_of(net)
             wires.append(f'<path d="M{f(self.X[c])},{f(y_)} L{f(self.X[c] + self.colw[c])},{f(y_)}" stroke="{col}" '
                          f'stroke-width="{3 if self.width.get(net, 1) > 1 else 1.5}"/>')
+        # クロック・リセットの幹線: 下に水平に引き、縦に上げて、短い水平で端子へ(曲がりを少なく)
+        lvl, G = self.lvl, self.G
+        for k, net in enumerate(rails):
+            ry = cell_bot + 30 + k * 16
+            col = self.ncol_of(net)
+            sw = 1.8
+            xs = []
+            for a, apn in D0.get(net, []):
+                if a not in N:
+                    continue
+                pxa, pya = self.px(a, apn), Y[a] + G[a][2][apn][1] + top
+                x1 = pxa + 10 + k * 4
+                wires.append(f'<path d="M{f(pxa)},{f(pya)} L{f(x1)},{f(pya)} L{f(x1)},{f(ry)}" fill="none" stroke="{col}" stroke-width="{sw}"/>')
+                xs.append(x1)
+            for b, bpn in S0.get(net, []):
+                if b not in N or bpn not in G[b][2]:
+                    continue
+                dx, dy, sd = G[b][2][bpn]
+                c = lvl[b]
+                drop = self.X[c] - 8 - (k % 3) * 5
+                pxb, pyb = self.ox(b) + dx, Y[b] + dy + top
+                if sd == "L":
+                    end = pxb - (7.2 if bpn == "ck" and N[b].get("cell", {}).get("edge") == "neg" else 0)
+                    d_ = f"M{f(drop)},{f(ry)} L{f(drop)},{f(pyb)} L{f(end)},{f(pyb)}"
+                elif sd == "B":
+                    yy = pyb + 10
+                    d_ = f"M{f(drop)},{f(ry)} L{f(drop)},{f(yy)} L{f(pxb)},{f(yy)} L{f(pxb)},{f(pyb)}"
+                else:
+                    yy = pyb - 10
+                    d_ = f"M{f(drop)},{f(ry)} L{f(drop)},{f(yy)} L{f(pxb)},{f(yy)} L{f(pxb)},{f(pyb)}"
+                wires.append(f'<path d="{d_}" fill="none" stroke="{col}" stroke-width="{sw}"/>')
+                xs.append(drop)
+            if xs:
+                wires.append(f'<path d="M{f(min(xs))},{f(ry)} L{f(max(xs))},{f(ry)}" stroke="{col}" stroke-width="{sw}"/>')
+                for xv in xs:
+                    if min(xs) < xv < max(xs):
+                        wires.append(f'<circle cx="{f(xv)}" cy="{f(ry)}" r="2.8" fill="{col}"/>')
+                wires.append(f'<text class="h" x="{f(min(xs) - 4)}" y="{f(ry + 4)}" font-size="10" font-weight="700" fill="{col}" '
+                             f'text-anchor="end">{esc(net)}</text>')
+        # 配線を省いた網: 端子に短い線と網名
+        for net in sorted(self.hide):
+            col = self.ncol_of(net)
+            for u, pn in D0.get(net, []) + S0.get(net, []):
+                if u not in N or pn not in G[u][2]:
+                    continue
+                dx, dy, sd = G[u][2][pn]
+                px_, py_ = self.ox(u) + dx, Y[u] + dy + top
+                if sd == "L":
+                    px_ -= 7.2 if pn == "ck" and N[u].get("cell", {}).get("edge") == "neg" else 0
+                    wires.append(f'<path d="M{f(px_ - 14)},{f(py_)} L{f(px_)},{f(py_)}" stroke="{col}" stroke-width="1.6"/>'
+                                 f'<text class="h" x="{f(px_ - 16)}" y="{f(py_ + 3.5)}" font-size="9.5" font-weight="700" fill="{col}" '
+                                 f'text-anchor="end">{esc(net)}</text>')
+                elif sd == "R":
+                    wires.append(f'<path d="M{f(px_)},{f(py_)} L{f(px_ + 14)},{f(py_)}" stroke="{col}" stroke-width="1.6"/>'
+                                 f'<text class="h" x="{f(px_ + 16)}" y="{f(py_ + 3.5)}" font-size="9.5" font-weight="700" fill="{col}">{esc(net)}</text>')
+                elif sd == "B":
+                    wires.append(f'<path d="M{f(px_)},{f(py_)} L{f(px_)},{f(py_ + 9)}" stroke="{col}" stroke-width="1.6"/>'
+                                 f'<text class="h" x="{f(px_)}" y="{f(py_ + 20)}" font-size="9.5" font-weight="700" fill="{col}" '
+                                 f'text-anchor="middle">{esc(net)}</text>')
+                else:
+                    wires.append(f'<path d="M{f(px_)},{f(py_)} L{f(px_)},{f(py_ - 9)}" stroke="{col}" stroke-width="1.6"/>'
+                                 f'<text class="h" x="{f(px_)}" y="{f(py_ - 12)}" font-size="9.5" font-weight="700" fill="{col}" '
+                                 f'text-anchor="middle">{esc(net)}</text>')
         o += wires
         # 網の名前とバス幅(駆動元の出力の右)
         for net, ds in self.drv.items():
@@ -845,6 +923,9 @@ class Gate:
         if self.rst:
             legend.append(f'<tspan fill="{RST_C}" font-weight="700">━ リセット</tspan>')
         legend.append(f'<tspan fill="{INK}">━ データ(太線 = バス、斜線と数字 = 幅)</tspan>')
+        if self.hide:
+            what = "・".join(([] if self.show_clk else ["クロック"]) + ([] if self.show_rst or not self.rst else ["リセット"]))
+            legend.append(f'<tspan fill="{GRAY}">{what}の配線は省略(端子の網名でつながる)</tspan>')
         o.append(f'<text x="{lx}" y="{f(ly)}" font-size="11">' + "  ".join(legend) + '</text>')
         o.append(f'<text x="{lx}" y="{f(ly + 18)}" font-size="10.5" fill="{GRAY}">FF の三角 = クロック端子(丸付き = 立ち下がり)/ 丸 = 負論理 / '
                  f'ICG = クロックゲート(EN をラッチして CK と AND、TE = テスト時に開ける)/ 黒丸 = 分岐 / 上を回る線 = 戻りの接続</text>')
@@ -912,7 +993,8 @@ def main():
     ap.add_argument("-o", "--out", default="out")
     ap.add_argument("-m", "--module")
     ap.add_argument("--png", action="store_true")
-    ap.add_argument("--symbols", choices=["ansi", "iec"], help="ansi = IEEE Std 91 の形(既定)/ iec = IEC 60617 の四角")
+    ap.add_argument("--clock-wires", action="store_true", default=None, help="クロックの配線を描く(既定は端子に網名だけ)")
+    ap.add_argument("--reset-wires", action="store_true", default=None, help="リセットの配線を描く(既定は端子に網名だけ)")
     a = ap.parse_args()
     if a.cmd == "netlist":
         spec, skipped = from_netlist(a.src, a.module)
@@ -922,7 +1004,7 @@ def main():
             print("  [info] 対応表にないセル(手で type を足す): " + ", ".join(skipped))
         return
     spec = yaml.safe_load(open(a.src, encoding="utf-8"))
-    g = Gate(spec, a.symbols)
+    g = Gate(spec, a.clock_wires, a.reset_wires)
     if a.cmd == "lint":
         g.check()
     else:

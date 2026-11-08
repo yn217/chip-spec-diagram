@@ -1,5 +1,6 @@
 title: リセット同期化回路(非同期アサート・同期解除、テストモードで外部リセットを素通し)
 note: rst_n_in が L になると即座に rst_n_out が L。解除は clk に同期して 2 クロック後。TEST_MODE=1 では scan_rst_n をそのまま出す
+wires: {reset: true}            # リセットの説明なのでリセットの配線を描く(クロックは網名だけ)
 ports:
   - {id: clk, dir: in}
   - {id: rst_n_in, dir: in, async: true}

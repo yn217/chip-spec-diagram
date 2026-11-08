@@ -4,7 +4,7 @@
 標準の記号(AND/OR/NAND/NOR/XOR/XNOR/NOT/BUF・MUX・FF・ラッチ・ICG)で、ネットリスト形式の YAML から自動で配置・配線する。
 
 ## 入力
-- YAML(書式は `scripts/gatediag.py` の先頭): `ports`(dir: in/out、`async: true` = 非同期の入力、`clock: true`)・
+- YAML(書式は `scripts/gatediag.py` の先頭): `ports`(dir: in/out、`async: true` = 非同期の入力、`clock: true`)・`wires`(クロック・リセットの配線を描くか)・
   `cells`(type と各端子の網名)・`nets`(バス幅)・`groups`(説明の囲み)・`note`
 - RTL がゲートのインスタンスで書かれている(合成後ネットリストや手書きの構造記述)なら
   `python3 scripts/gatediag.py netlist top.v -m モジュール -o gate.yaml` で YAML を作る。対応表にないセルは info に出るので type を足す。
@@ -23,8 +23,10 @@
 - 記号は規格の形: 既定は IEEE Std 91-1984 / MIL-STD-806 の形(distinctive shape)。
   OR 系の前は半径 = 高さの円弧 2 つ(中心は反対側の後ろの角)で、頂点までの奥行きは √3/2 × 高さ。後ろも半径 = 高さの円弧。
   XOR の後ろの線は高さの 5/26 離す。AND は奥行き = 高さ(直線 h/2 + 半円)。
-  `symbols: iec`(または `--symbols iec`)で IEC 60617-12 の四角(&・≥1・=1・1)にする。
-- FF のクロック端子は三角(立ち下がりは丸付き)。負論理の端子は丸。定数は端子の前に 0/1。
+- FF のクロック端子は三角(立ち下がりは丸付き)。リセット(RN)は枠の下に丸、セット(SN)は枠の上に丸。負論理の端子は丸。定数は端子の前に 0/1。
+- クロック・リセットの配線は既定では描かず、端子に短い線と網名を書く(煩雑になるため)。説明に要る時だけ
+  `wires: {clock: true, reset: true}`(または `--clock-wires` `--reset-wires`)で描く。
+  描く時は図の下に水平の幹線を引き、端子の手前の通路で縦に上げ、短い水平で端子へ(リセットは FF の下から上げる)。曲がりを少なくして追いやすくする。
 - セルの上に名前、下に注記(紫)。文字は白い縁取りで線と重なっても読めるようにする。
 
 ## チェック(lint)
