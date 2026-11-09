@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""gallery — README 用の図の見本を作る(サンプルから全種類の図を作り直し、一覧画像と個別画像を docs/gallery/ に置く)
+"""gallery — サンプルから全種類の図を今の描き方で描き直す(README の図の差し替え用)
 
-  python3 scripts/gallery.py              # docs/gallery/overview.png と docs/gallery/<種類>.png
+  python3 scripts/gallery.py              # docs/gallery/regen/<種類>.png(一覧画像は作らない)
   python3 scripts/gallery.py --width 1600 # 個別画像の幅(px)
 
 必要: PNG 出力(rsvg-convert か cairosvg)と Pillow、日本語フォント(Noto Sans CJK など)。
@@ -67,7 +67,7 @@ def font(size, bold=False):
 
 def make(width):
     from PIL import Image
-    out = os.path.join(ROOT, "docs", "gallery")
+    out = os.path.join(ROOT, "docs", "gallery", "regen")
     os.makedirs(out, exist_ok=True)
     tmp = tempfile.mkdtemp()
     done = {}
@@ -86,7 +86,6 @@ def make(width):
         im.save(p, optimize=True)
         done[name] = (title, sub, p)
         print(f"  {name}.png  {im.width}x{im.height}")
-    overview(done, out)
     shutil.rmtree(tmp, ignore_errors=True)
 
 

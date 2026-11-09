@@ -8,138 +8,150 @@
 
 ## 描ける図
 
-![描ける図の一覧](docs/gallery/overview.png)
+これまでに描いた図です(サンプルは `examples/`)。
 
-見本はすべて `examples/` のサンプルから作っています。`python3 scripts/gallery.py` で作り直せます。
+| 図 | 手順 |
+|---|---|
+| バス構成図・メモリマップ・CPU とキャッシュ・多ポート DRAM・レイテンシ | `diagrams/bus-architecture/GUIDE.md` |
+| ストーリーボード | `diagrams/storyboard/GUIDE.md` |
+| ブロック間の接続図 | `diagrams/block-interface/GUIDE.md` |
+| クロック系統図 | `diagrams/clock-tree/GUIDE.md` |
+| リセット系統図 | `diagrams/reset-tree/GUIDE.md` |
+| ゲートレベル図 | `diagrams/gate-level/GUIDE.md` |
+| データフロー検討図 | `diagrams/dataflow-floorplan/GUIDE.md` |
+| フロアプラン・ボード配置 | `diagrams/bus-architecture/GUIDE.md`(G4) |
 
-| 図 | 手順 | 例 |
-|---|---|---|
-| [バス構成図](#バス構成図) | `diagrams/bus-architecture/GUIDE.md` | `examples/npu_soc.yaml` |
-| [CPU・キャッシュ・多ポート DRAM](#cpuキャッシュ多ポート-dram) | `diagrams/bus-architecture/GUIDE.md` | `examples/multiport_dram.yaml` |
-| [メモリマップ](#メモリマップ) | `diagrams/bus-architecture/GUIDE.md` | `examples/product_soc.yaml` |
-| [動作とレイテンシの目安](#動作とレイテンシの目安) | `diagrams/bus-architecture/GUIDE.md` | `examples/latency_demo.yaml` |
-| [ストーリーボード](#ストーリーボード) | `diagrams/storyboard/GUIDE.md` | `examples/npu_soc.yaml` |
-| [ブロック間の接続図](#ブロック間の接続図) | `diagrams/block-interface/GUIDE.md` | `examples/interface_npu.yaml` |
-| [クロック系統図](#クロック系統図) | `diagrams/clock-tree/GUIDE.md` | `examples/product_soc.yaml` |
-| [クロック系統図(テストモード)](#クロック系統図テストモード) | `diagrams/clock-tree/GUIDE.md` | `examples/product_soc.yaml` |
-| [リセット系統図](#リセット系統図) | `diagrams/reset-tree/GUIDE.md` | `examples/product_soc.yaml` |
-| [ゲートレベル図](#ゲートレベル図) | `diagrams/gate-level/GUIDE.md` | `examples/gate/pipeline.yaml` |
-| [ゲートレベル図(クロック切替)](#ゲートレベル図クロック切替) | `diagrams/gate-level/GUIDE.md` | `examples/gate/glitchfree_clkmux.yaml` |
-| [データフロー検討図](#データフロー検討図) | `diagrams/dataflow-floorplan/GUIDE.md` | `examples/npu_soc.yaml` |
-| [フロアプラン](#フロアプラン) | `diagrams/bus-architecture/GUIDE.md(G4)` | `examples/floorplan.yaml` |
-| [ボード配置](#ボード配置) | `diagrams/bus-architecture/GUIDE.md(G4)` | `examples/board.yaml` |
+### バス構成図(製品規模)
 
-### バス構成図
+CPU のグループごとにバスを分け、バス同士を縦の線で直接つなぐ。APB は低速の周辺、色はメモリマップと共通。
 
-マスタ/スレーブ(M/S)・バス幅・クロック・帯域・CDC・SRAM の位置。バスの分割・バス同士の接続・APB・多ポート DRAM、到達性とループの検査。
+<img src="docs/gallery/product_soc.png" alt="バス構成図(製品規模)" width="820">
 
-<img src="docs/gallery/bus_architecture.png" alt="バス構成図" width="820">
+### メモリマップ(製品規模)
 
-手順: `diagrams/bus-architecture/GUIDE.md` / 例: `examples/npu_soc.yaml`
+バス構成図と同じ色。各マスタから全アドレスへ届くか、ループがないかを確認。
+
+<img src="docs/gallery/product_soc_memmap.png" alt="メモリマップ(製品規模)" width="820">
 
 ### CPU・キャッシュ・多ポート DRAM
 
-CPU 枠の中の I$/D$、L2 → L3 → バス。複数の AXI から DRAM コントローラの複数ポートへ。
+CPU 枠の中に I$/D$、L2 → L3 → バス。CPU・GPU・NPU の各 AXI から DRAM コントローラの 3 ポートへ横につなぐ。
 
-<img src="docs/gallery/cpu_cache_multiport.png" alt="CPU・キャッシュ・多ポート DRAM" width="820">
+<img src="docs/gallery/multiport_dram.png" alt="CPU・キャッシュ・多ポート DRAM" width="820">
 
-手順: `diagrams/bus-architecture/GUIDE.md` / 例: `examples/multiport_dram.yaml`
+### メモリマップ(多ポート DRAM)
 
-### メモリマップ
+複数のバスから見える DRAM の範囲を、バスの色を並べて示す。
 
-バス構成図と同じ色。マスタごとに全アドレスへ届くか、ループがないかを表にする。
+<img src="docs/gallery/multiport_memmap.png" alt="メモリマップ(多ポート DRAM)" width="820">
 
-<img src="docs/gallery/memory_map.png" alt="メモリマップ" width="820">
+### CPU とキャッシュの階層
 
-手順: `diagrams/bus-architecture/GUIDE.md` / 例: `examples/product_soc.yaml`
+I$・D$ は CPU 枠の中に容量付きで。L2 から I・D の 2 本、複数コアが L3 に集まる。
+
+<img src="docs/gallery/cpu_l1_l2_l3.png" alt="CPU とキャッシュの階層" width="820">
+
+### マクロとバスが多い例
+
+枠を引っ付け、隙間を詰めて、スクロールを減らした配置。
+
+<img src="docs/gallery/stress_soc.png" alt="マクロとバスが多い例" width="820">
 
 ### 動作とレイテンシの目安
 
-CPU → AXI → AHB → APB の矢印と、到着・リードの戻りまでのサイクル数。
+CPU → AXI → AHB → APB の順に矢印を引き、到着と、リードのデータが CPU に戻るまでのサイクル数を書く。
 
-<img src="docs/gallery/latency_step.png" alt="動作とレイテンシの目安" width="820">
+<img src="docs/gallery/latency_apb_read.png" alt="動作とレイテンシの目安" width="820">
 
-手順: `diagrams/bus-architecture/GUIDE.md` / 例: `examples/latency_demo.yaml`
+### ストーリーボード(NPU SoC)
 
-### ストーリーボード
+同じ構成図を使い回し、ステップごとのコマを同じ縮尺で並べる。
 
-構成図を使い回し、ステップごとのコマを同じ縮尺で 1 枚に並べる。
+<img src="docs/gallery/storyboard_npu_soc.png" alt="ストーリーボード(NPU SoC)" width="820">
 
-<img src="docs/gallery/storyboard.png" alt="ストーリーボード" width="820">
+### ストーリーボード(レイテンシ)
 
-手順: `diagrams/storyboard/GUIDE.md` / 例: `examples/npu_soc.yaml`
+縦長の図は縦長のコマを横に並べる。各コマにレイテンシの目安。
+
+<img src="docs/gallery/storyboard_latency_demo.png" alt="ストーリーボード(レイテンシ)" width="820">
+
+### ストーリーボード(製品規模)
+
+大きな図はコマごとに動く所へ寄せ、横長のコマを 1 列に並べる。
+
+<img src="docs/gallery/storyboard_product_soc.png" alt="ストーリーボード(製品規模)" width="820">
 
 ### ブロック間の接続図
 
-中心のブロックと接続元・接続先。端子の入出力・バス幅。RTL から起こせる。
+中心のブロックと、左に接続元・右に接続先。端子の入出力アイコンは枠の辺の上、バス幅も表示。
 
-<img src="docs/gallery/block_interface.png" alt="ブロック間の接続図" width="820">
+<img src="docs/gallery/interface_npu.png" alt="ブロック間の接続図" width="820">
 
-手順: `diagrams/block-interface/GUIDE.md` / 例: `examples/interface_npu.yaml`
+### ブロック間の接続図(RTL から)
 
-### クロック系統図
+RTL の接続から起こした例。AXI/APB は束ねて 1 本に。
 
-源 → PLL → 切替 → 分周(レジスタ切替・歯抜け)→ ゲート → ドメイン。CDC と比率同期、SDC の下書き。
+<img src="docs/gallery/interface_from_rtl.png" alt="ブロック間の接続図(RTL から)" width="820">
 
-<img src="docs/gallery/clock_tree.png" alt="クロック系統図" width="820">
+### クロック系統図(製品規模)
 
-手順: `diagrams/clock-tree/GUIDE.md` / 例: `examples/product_soc.yaml`
+源 → PLL → クロック切替 → 分周(レジスタ切替・歯抜け)→ ゲート → ドメイン。CDC と比率同期を分けて描く。
+
+<img src="docs/gallery/clock_tree_product_soc.png" alt="クロック系統図(製品規模)" width="820">
 
 ### クロック系統図(テストモード)
 
-テストモードで外部のテスト用クロックを素通しする経路。
+テストモードで外部のテスト用クロックを素通しする経路。機能の経路は薄く。
 
-<img src="docs/gallery/clock_tree_test.png" alt="クロック系統図(テストモード)" width="820">
+<img src="docs/gallery/clock_tree_test_product_soc.png" alt="クロック系統図(テストモード)" width="820">
 
-手順: `diagrams/clock-tree/GUIDE.md` / 例: `examples/product_soc.yaml`
+### クロック系統図(NPU SoC)
 
-### リセット系統図
+PLL ごとの分周とドメイン、乗り換えの一覧。
 
-リセット源ごとの列 → OR → 同期化 → ドメイン。非同期/同期と発行クロック、解除シーケンス、RDC、解除時の電源ドロップ。
+<img src="docs/gallery/clock_tree_npu_soc.png" alt="クロック系統図(NPU SoC)" width="820">
 
-<img src="docs/gallery/reset_tree.png" alt="リセット系統図" width="820">
+### リセット系統図(製品規模)
 
-手順: `diagrams/reset-tree/GUIDE.md` / 例: `examples/product_soc.yaml`
+リセット源ごとの列から OR へ。非同期/同期と発行クロック、解除シーケンス、RDC の説明、解除時の電源ドロップ。
 
-### ゲートレベル図
+<img src="docs/gallery/reset_tree_product_soc.png" alt="リセット系統図(製品規模)" width="820">
 
-IEEE の記号。FF を段ごとに等間隔・同じ高さに並べ、段数(レイテンシ)を読めるようにする。
+### リセット系統図(NPU SoC)
 
-<img src="docs/gallery/gate_pipeline.png" alt="ゲートレベル図" width="820">
+源の列・同期化・ドメイン、右に RDC、下に解除の波形。
 
-手順: `diagrams/gate-level/GUIDE.md` / 例: `examples/gate/pipeline.yaml`
+<img src="docs/gallery/reset_tree_npu_soc.png" alt="リセット系統図(NPU SoC)" width="820">
+
+### ゲートレベル図(パイプライン)
+
+FF を段ごとに等間隔・同じ高さに並べ、段数(レイテンシ)を数えやすくする。
+
+<img src="docs/gallery/pipeline.png" alt="ゲートレベル図(パイプライン)" width="820">
 
 ### ゲートレベル図(クロック切替)
 
-クロックの配線は必要な時だけ。下の幹線から縦に上げて FF へ。
+クロックの配線は下の幹線から縦に上げて FF へ。戻りの接続は上を回す。
 
-<img src="docs/gallery/gate_clock_mux.png" alt="ゲートレベル図(クロック切替)" width="820">
+<img src="docs/gallery/glitchfree_clkmux.png" alt="ゲートレベル図(クロック切替)" width="820">
 
-手順: `diagrams/gate-level/GUIDE.md` / 例: `examples/gate/glitchfree_clkmux.yaml`
+### ゲートレベル図(リセット同期化)
+
+非同期アサート・同期解除の 2 段同期。リセットは FF の枠の下の丸へ。
+
+<img src="docs/gallery/reset_sync.png" alt="ゲートレベル図(リセット同期化)" width="820">
+
+### ゲートレベル図(クロックゲート)
+
+ICG とイネーブル付きレジスタ。クロック・リセットの配線は省いて端子に網名。
+
+<img src="docs/gallery/icg_enable.png" alt="ゲートレベル図(クロックゲート)" width="820">
 
 ### データフロー検討図
 
-どの辺の端子から入り、PHY → バス → どの SRAM・演算器へ届くか。距離と帯域の表。
+どの辺の端子から入り、PHY → バス → どの SRAM・演算器へ届くか。経路ごとの距離と帯域の表。
 
-<img src="docs/gallery/dataflow_floorplan.png" alt="データフロー検討図" width="820">
-
-手順: `diagrams/dataflow-floorplan/GUIDE.md` / 例: `examples/npu_soc.yaml`
-
-### フロアプラン
-
-IP の実寸で配置を検討(見積もり・自動配置・重なりと使用率の確認)。
-
-<img src="docs/gallery/floorplan.png" alt="フロアプラン" width="820">
-
-手順: `diagrams/bus-architecture/GUIDE.md(G4)` / 例: `examples/floorplan.yaml`
-
-### ボード配置
-
-ボード上のコネクタの位置から、チップ IO の辺を決める。
-
-<img src="docs/gallery/board.png" alt="ボード配置" width="820">
-
-手順: `diagrams/bus-architecture/GUIDE.md(G4)` / 例: `examples/board.yaml`
+<img src="docs/gallery/dataflow_fp_npu_soc.png" alt="データフロー検討図" width="820">
 
 `SKILL.md` は共通の手順(質問して決定事項を増やす・ルールの台帳・出す前の検査)と、図の種類ごとの手順への案内です。
 
@@ -168,7 +180,7 @@ IP の実寸で配置を検討(見積もり・自動配置・重なりと使用�
 | `resettree.py` | リセット系統図(源・OR・同期化・ドメイン・解除シーケンス・RDC のチェック) |
 | `gatediag.py` | ゲートレベル図(標準記号で自動配置・配線、構造記述ネットリストの読み込み、未接続・ループ・ゲーテッドクロック・CDC のチェック) |
 | `dataflowfp.py` | データフロー検討図(フロアプラン風の配置に、辺の端子 → PHY → バス → 行き先の流れ、距離・帯域の表) |
-| `gallery.py` | README の図の見本を作り直す(全種類をサンプルから描き、一覧画像と個別画像を `docs/gallery/` に置く) |
+| `gallery.py` | サンプルから全種類の図を今の描き方で描き直す(`docs/gallery/regen/` に出す。README の図の差し替え用) |
 | `storyboard.py` | 動作説明のストーリーボード(構成図を使い回し、ステップごとのコマを 1 枚に並べる) |
 | `ifdiag.py` | ブロック間の接続図(YAML または RTL から。AXI/APB の束ね、lint、SVG/PNG/draw.io) |
 | `memmap.py` `reach.py` `addrmap.py` | メモリマップの図と表、マスタごとの到達性・ループの検査 |
