@@ -181,6 +181,7 @@ ICG とイネーブル付きレジスタ。クロック・リセットの配線�
 | `gatediag.py` | ゲートレベル図(標準記号で自動配置・配線、構造記述ネットリストの読み込み、未接続・ループ・ゲーテッドクロック・CDC のチェック) |
 | `dataflowfp.py` | データフロー検討図(フロアプラン風の配置に、辺の端子 → PHY → バス → 行き先の流れ、距離・帯域の表) |
 | `gallery.py` | サンプルから全種類の図を今の描き方で描き直す(`docs/gallery/regen/` に出す。README の図の差し替え用) |
+| `rtldb.py` | RTL の接続を SQLite のデータベースにする(slang でエラボレート)。クロックドメインと非同期の乗り換え(CDC)の検出、接続図用 YAML の出力。方式は `reference/rtldb.md` |
 | `storyboard.py` | 動作説明のストーリーボード(構成図を使い回し、ステップごとのコマを 1 枚に並べる) |
 | `ifdiag.py` | ブロック間の接続図(YAML または RTL から。AXI/APB の束ね、lint、SVG/PNG/draw.io) |
 | `memmap.py` `reach.py` `addrmap.py` | メモリマップの図と表、マスタごとの到達性・ループの検査 |
