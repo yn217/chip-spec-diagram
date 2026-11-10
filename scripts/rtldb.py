@@ -1383,6 +1383,7 @@ def iface_yaml(db, inst):
     fin, fout = collections.defaultdict(list), collections.defaultdict(list)
     for d, s in db.execute("SELECT dst,src FROM edge WHERE kind IN ('conn','comb')"):
         fin[d].append(s); fout[s].append(d)
+    ffset = {x[0] for x in db.execute("SELECT sig FROM ff")}
     def trace(p, adj):
         """上位の階層の配線だけをたどり、兄弟ブロックの端子・上位の端子・上位の論理に行き着く"""
         res, seen, st = set(), set(), list(adj[p])
@@ -1398,9 +1399,12 @@ def iface_yaml(db, inst):
                 res.add((iname[ins][1], iname[ins][0], nm, x))
             elif ins == par:
                 nx = adj[x]
-                if not nx:
+                if x in ffset:
+                    res.add(("(上位の論理)", iname[par][0], nm, x))      # 上位の階層にある FF
+                elif not nx:
                     res.add(("(未接続/定数)", "-", nm, x))
-                st += nx
+                else:
+                    st += nx
         return res
     center = {"module": cmod, "instance": cname, "ports": []}
     peers = {"left": collections.OrderedDict(), "right": collections.OrderedDict()}
