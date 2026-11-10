@@ -19,6 +19,7 @@
 | リセット系統図 | `diagrams/reset-tree/GUIDE.md` |
 | ゲートレベル図 | `diagrams/gate-level/GUIDE.md` |
 | データフロー検討図 | `diagrams/dataflow-floorplan/GUIDE.md` |
+| CDC 階層図・CDC 詳細図(非同期箇所) | `diagrams/cdc/GUIDE.md` |
 | フロアプラン・ボード配置 | `diagrams/bus-architecture/GUIDE.md`(G4) |
 
 ### バス構成図(製品規模)
@@ -153,6 +154,17 @@ ICG とイネーブル付きレジスタ。クロック・リセットの配線�
 
 <img src="docs/gallery/dataflow_fp_npu_soc.png" alt="データフロー検討図" width="820">
 
+### CDC 階層図(非同期箇所)
+RTL から作ったデータベースを元に、階層(行)× クロックドメイン(列)の上へクロックの乗り換えを線で描く。
+赤の太線 = 要対策、橙の破線 = 要確認、緑の細線 = 同期化あり。番号は右の一覧と対応する。下は階層 9 段の確認用 RTL(`examples/rtl/cdc_deep.sv`)。
+
+<img src="docs/gallery/cdc_hier_deep.png" alt="CDC 階層図" width="820">
+
+### CDC 詳細図
+乗り換え 1 本の回路(送り側の FF・同期化の段・取り込みの条件)。下は非同期 FIFO のデータ。
+
+<img src="docs/gallery/cdc_detail_fifo.png" alt="CDC 詳細図" width="820">
+
 `SKILL.md` は共通の手順(質問して決定事項を増やす・ルールの台帳・出す前の検査)と、図の種類ごとの手順への案内です。
 
 ## 使い方
@@ -181,7 +193,8 @@ ICG とイネーブル付きレジスタ。クロック・リセットの配線�
 | `gatediag.py` | ゲートレベル図(標準記号で自動配置・配線、構造記述ネットリストの読み込み、未接続・ループ・ゲーテッドクロック・CDC のチェック) |
 | `dataflowfp.py` | データフロー検討図(フロアプラン風の配置に、辺の端子 → PHY → バス → 行き先の流れ、距離・帯域の表) |
 | `gallery.py` | サンプルから全種類の図を今の描き方で描き直す(`docs/gallery/regen/` に出す。README の図の差し替え用) |
-| `rtldb.py` | RTL の接続を SQLite のデータベースにする(slang でエラボレート)。クロックドメインと非同期の乗り換え(CDC)の検出、接続図用 YAML の出力。方式は `reference/rtldb.md` |
+| `rtldb.py` | RTL の接続を SQLite のデータベースにする(slang でエラボレート)。クロックドメイン・非同期の乗り換え(CDC 14 分類)・リセットの乗り換え(RDC)の検出、経路の表示(`path`)、答え付きの自己確認(`selftest`)、接続図用 YAML の出力。OpenTitan top_earlgrey(51.5 万行・階層 11 段)で確認。方式は `reference/rtldb.md` |
+| `cdcdiag.py` | CDC 階層図(階層 × クロックドメインに乗り換えの線)と CDC 詳細図(乗り換え 1 本の回路 → `gatediag.py`) |
 | `storyboard.py` | 動作説明のストーリーボード(構成図を使い回し、ステップごとのコマを 1 枚に並べる) |
 | `ifdiag.py` | ブロック間の接続図(YAML または RTL から。AXI/APB の束ね、lint、SVG/PNG/draw.io) |
 | `memmap.py` `reach.py` `addrmap.py` | メモリマップの図と表、マスタごとの到達性・ループの検査 |

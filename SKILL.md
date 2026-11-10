@@ -1,6 +1,6 @@
 ---
 name: chip-spec-diagram
-description: 半導体チップの仕様書に載せる図を作るハーネス。バス構成図(アーキテクチャ)・メモリマップ・ブロック間の接続図(端子の入出力・幅)・クロック系統図・リセット系統図・動作のストーリーボード(レイテンシ目安)・データフロー検討図(フロアプラン風)・ゲートレベル図・フロアプラン・ボード配置。仕様が未決なら質問して決定事項を増やしながら仮置きで描き進め、RTLがあれば解析して図を起こす。Use for chip/SoC block diagrams, bus architecture, memory maps, block interface/connection diagrams, clock trees, reset trees, storyboards, dataflow floorplans, gate-level schematics, floorplans, RTL-to-diagram, draw.io export.
+description: 半導体チップの仕様書に載せる図を作るハーネス。バス構成図(アーキテクチャ)・メモリマップ・ブロック間の接続図(端子の入出力・幅)・クロック系統図・リセット系統図・動作のストーリーボード(レイテンシ目安)・データフロー検討図(フロアプラン風)・ゲートレベル図・非同期箇所の図(CDC 階層図)・フロアプラン・ボード配置。仕様が未決なら質問して決定事項を増やしながら仮置きで描き進め、RTLがあれば解析して図を起こす。Use for chip/SoC block diagrams, bus architecture, memory maps, block interface/connection diagrams, clock trees, reset trees, storyboards, dataflow floorplans, gate-level schematics, CDC hierarchy diagrams, floorplans, RTL-to-diagram, draw.io export.
 ---
 
 # chip-spec-diagram — 仕様書用の図を「質問しながら育てる」ハーネス
@@ -55,7 +55,8 @@ description: 半導体チップの仕様書に載せる図を作るハーネス�
 | 動作のストーリーボード(ステップ・レイテンシ目安) | 使える(バス構成図を使い回してコマを並べる) | `diagrams/storyboard/GUIDE.md` | `storyboard.py`(`chipdiag.py` `latency.py`) |
 | クロック系統図(源→PLL→MUX→分周→ゲート→ドメイン、CDC と比率同期) | 使える | `diagrams/clock-tree/GUIDE.md` | `clocktree.py` |
 | データフロー検討図(フロアプラン風: 辺の端子 → PHY → バス → SRAM・演算器、距離・帯域) | 使える | `diagrams/dataflow-floorplan/GUIDE.md` | `dataflowfp.py` |
-| RTL の接続データベース(接続図の元・クロックドメインと CDC の検出) | 使える | `reference/rtldb.md` | `rtldb.py` |
+| RTL の接続データベース(接続図の元・クロックドメインと CDC / RDC の検出・経路の表示・自己確認) | 使える | `reference/rtldb.md` | `rtldb.py` |
+| CDC 階層図・CDC 詳細図(非同期箇所: 階層 × クロックドメインに乗り換えの線、1 本ずつの回路) | 使える | `diagrams/cdc/GUIDE.md` | `cdcdiag.py` |
 | フロアプラン・ボード配置 | 使える | `diagrams/bus-architecture/GUIDE.md` の G4 | `floorplan.py` `board.py` |
 | リセット系統図(源→OR→同期化→ドメイン、解除シーケンス、RDC) | 使える | `diagrams/reset-tree/GUIDE.md` | `resettree.py` |
 | ゲートレベル図(記号の回路図、未接続・ループ・ゲーテッドクロック・CDC のチェック) | 使える | `diagrams/gate-level/GUIDE.md` | `gatediag.py` |

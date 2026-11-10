@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
-"""rtldb — RTL の接続をデータベース(SQLite)にし、クロックドメインと非同期の乗り換え(CDC)を検出する
+"""rtldb — RTL の接続をデータベース(SQLite)にし、クロックドメインと非同期の乗り換え(CDC・RDC)を検出する
   python3 rtldb.py build   -o design.db --top TOP [-I incdir] [-D NAME=VAL] [-f files.f] a.v b.sv ...
-  python3 rtldb.py analyze design.db [-o out/]          # クロックの源・ドメイン・CDC を求めて DB に書く。cdc.md / cdc_map.svg
+  python3 rtldb.py analyze design.db [-o out/] [--static 正規表現] [--async-in 正規表現]   # → cdc.md / cdc_map.svg / cdc_hier.svg
+  python3 rtldb.py path    design.db --src 正規表現 --dst 正規表現   # 送り側から受け側まで、階層をまたぐ信号の並び
   python3 rtldb.py iface   design.db --inst top.u_x -o iface.yaml   # ブロック間の接続図(ifdiag.py)用の YAML
+  python3 rtldb.py selftest                                         # 答えのわかる RTL(examples/rtl/cdc_expected.yaml)で確かめる
   python3 rtldb.py stats   design.db
-方式(詳しくは reference/rtldb.md)
+方式(詳しくは reference/rtldb.md。図は cdcdiag.py と diagrams/cdc/GUIDE.md)
   1. slang(pyslang)でエラボレートする: パラメータ・generate・マクロ・インスタンス配列を展開した後の階層を得る。
-  2. 階層を歩き、信号(端子・ネット・変数)を「階層パス」で一意な節点にし、駆動の関係を辺にする(信号単位、ビット単位ではない)。
+  2. 階層を歩き、信号(端子・ネット・変数)を「階層パス」で一意な節点にし、駆動の関係を辺にする。
+     節点の単位: 構造体はメンバごと、構造体の配列は要素ごと、ベクタは定数の添字・範囲で読み書きされた所だけ一部の節点(part)。
        comb: assign / always @* / ゲート       seq: クロックで叩く代入(dst は FF)     conn: インスタンスの端子接続
-       arst: 非同期リセット                     role: data(右辺)/ ctrl(if・case の条件)  direct: 論理を通らない(名前だけの式)
+       arst: 非同期リセット                     role: data(右辺)/ ctrl(if・case の条件)  direct: 論理を通らない(名前・選択・反転だけ)
   3. クロック: FF のクロック端子から駆動を逆にたどり、源(トップ端子・ブラックボックスの出力・FF の出力=分周・
      複数クロックの合流=切替)を求める。ゲートされたクロックは元のドメインに含める。分周は元と同じ「系」(同期)とする。
-  4. CDC: FF ごとに D 入力の論理の円錐を FF まで逆にたどり、系の違う FF があれば乗り換え。受け側の形で分類する。
-       sync / sync_bus / sync_gray  … 論理なしで受け、同じドメインの次の FF へ直結(2 段以上)。多ビットは要確認
-       sync_logic … 同期化の前に組み合わせ論理(グリッチ)   sync_tap … 1 段目の出力を論理でも使っている
-       data_enable … 受け側ドメインの条件で取り込むデータ(イネーブル同期・ハンドシェイクか要確認)
-       mem … 別クロックで書くメモリ(非同期 FIFO の RAM)       no_sync … 同期化なし
+  4. CDC: FF ごとに入力の論理の円錐を FF まで逆にたどり、系の違う FF があれば乗り換え。同期化の鎖を先に全部見つけてから分類する。
+       同期化あり: sync / sync_gray / sync_pulse(エッジ検出)/ fifo(非同期 FIFO のデータ)/ handshake(同期化した条件で取り込む)
+       要確認:     gated(同期化した信号と論理で合わせる)/ sync_bus / data_enable / mem / reconv(再収束)/ clk_as_data
+       要対策:     sync_logic(同期化の前に論理)/ sync_tap(1 段目を使用)/ no_sync
+  5. RDC: FF の非同期リセットを逆にたどる: rst_sync / rst_ok / rst_input / rst_logic / rst_cross
 """
 import os, sys, re, json, argparse, sqlite3, collections, time
 SCHEMA = """
@@ -37,20 +40,29 @@ CREATE TABLE clock(id INTEGER PRIMARY KEY, root INTEGER, name TEXT,
                    family INTEGER,  -- 同期とみなす系(源のドメイン)
                    parent TEXT, n_ff INTEGER, n_gated INTEGER);
 CREATE TABLE cdc(id INTEGER PRIMARY KEY, src INTEGER, dst INTEGER, src_clk INTEGER, dst_clk INTEGER,
-                 class TEXT, stages INTEGER, logic INTEGER, width INTEGER);
+                 class TEXT, stages INTEGER, logic INTEGER, width INTEGER,
+                 via INTEGER);     -- via: 条件・ポインタを同期化している FF(1 段目)。handshake / gated / fifo / reconv
+CREATE TABLE rdc(id INTEGER PRIMARY KEY, src INTEGER, dst_clk INTEGER, class TEXT, n_ff INTEGER, example INTEGER);
 CREATE INDEX e_dst ON edge(dst); CREATE INDEX e_src ON edge(src); CREATE INDEX s_inst ON signal(inst);
 CREATE VIEW conn AS   -- 兄弟ブロック間・上位との接続(図を描く時の入口)
   SELECT e.id, si.path AS src_inst, s.name AS src_port, di.path AS dst_inst, d.name AS dst_port, d.width
   FROM edge e JOIN signal s ON s.id=e.src JOIN signal d ON d.id=e.dst
   JOIN instance si ON si.id=s.inst JOIN instance di ON di.id=d.inst WHERE e.kind='conn';
 """
-OK_CLASSES = ("sync", "sync_gray")
+OK_CLASSES = ("sync", "sync_gray", "sync_pulse", "fifo", "handshake")
 INFO = ("static",)
-REVIEW = ("sync_bus", "data_enable", "mem")
+REVIEW = ("gated", "sync_bus", "data_enable", "mem", "reconv", "clk_as_data")
 BAD = ("no_sync", "sync_logic", "sync_tap")
-CLASS_JA = {"sync": "同期化あり(2 段以上)", "sync_gray": "同期化あり(グレイコード)", "sync_bus": "多ビットを FF で同期化(要確認)",
-            "data_enable": "受け側の条件で取り込むデータ(要確認)", "mem": "別クロックで書くメモリ(要確認)",
-            "static": "準静的と宣言(設定レジスタ)", "sync_logic": "同期化の前に論理(グリッチ)", "sync_tap": "1 段目の出力を論理で使用", "no_sync": "同期化なし"}
+CLASS_JA = {"sync": "同期化あり(2 段以上)", "sync_gray": "同期化あり(グレイコード)", "sync_pulse": "同期化 + エッジ検出(パルス/トグル)",
+            "fifo": "非同期 FIFO のデータ(両向きのポインタ同期あり)", "handshake": "同期化した制御で取り込むデータ(ハンドシェイク)",
+            "gated": "同期化した信号と論理で合わせて使用(ゲートの形・要確認)", "sync_bus": "多ビットを FF で同期化(要確認)", "data_enable": "受け側の条件で取り込むデータ(要確認)",
+            "mem": "別クロックで書くメモリ(要確認)", "reconv": "別々に同期化した信号の再収束(要確認)",
+            "clk_as_data": "クロックをデータとして使用(要確認)", "static": "準静的と宣言(設定レジスタ)",
+            "sync_logic": "同期化の前に論理(グリッチ)", "sync_tap": "1 段目の出力を論理で使用", "no_sync": "同期化なし"}
+RDC_JA = {"rst_sync": "リセット同期化回路(非同期アサート・同期解除)", "rst_ok": "同じドメインの FF が出すリセット",
+          "rst_input": "外部入力のリセットを直接使用(解除が非同期・要確認)", "rst_logic": "複数の FF の論理で作るリセット(グリッチ・要確認)",
+          "rst_cross": "別ドメインの FF が出すリセット(要対策)"}
+
 
 # ================= 1. RTL → DB =================
 class Builder:
@@ -59,6 +71,7 @@ class Builder:
         self.ps, self.A = ps, ps.ast
         self.insts, self.sig, self.sigs, self.edges, self.ffs = [], {}, [], [], {}
         self.bbconn = []
+        self.leaf, self.kids, self.nosplit, self.nhub, self.dim = {}, {}, False, 0, {}
         self.nwarn = collections.Counter()
     def compile(self, files, top, incs, defs, extra=""):
         ps = self.ps
@@ -86,23 +99,230 @@ class Builder:
             return os.path.basename(str(self.sm.getFileName(l))), self.sm.getLineNumber(l)
         except Exception:
             return "", 0
-    def sid(self, sym, inst=None):
+    def leaves(self, sym, inst=None):
+        """信号の節点。構造体はメンバごとに分ける(配列の添字はまとめる)→ [(メンバ名の並び, 節点の番号)]"""
         p = sym.hierarchicalPath
-        i = self.sig.get(p)
-        if i is None:
-            t = sym.type
+        lv = self.leaf.get(p)
+        if lv is not None:
+            return lv
+        A = self.A
+        fl = []
+
+        def walk(t, pre):
+            ct = t.canonicalType
+            et, mem = ct, False
             try:
-                mem = bool(t.isUnpackedArray)
-                w = int(t.elementType.bitWidth if mem else t.bitWidth)
+                while et.isArray and len(fl) < 3000:
+                    if et.hasFixedRange:
+                        el = et.elementType.canonicalType
+                        while el.isArray:
+                            el = el.elementType.canonicalType
+                        rg = et.fixedRange
+                        if "StructType" in str(el.kind) and abs(rg.upper - rg.lower) < 256:
+                            for i in range(min(rg.lower, rg.upper), max(rg.lower, rg.upper) + 1):
+                                walk(et.elementType, pre + (f"[{i}]",))      # 構造体の配列は要素ごとに分ける
+                            return
+                    mem = mem or bool(et.isUnpackedArray)
+                    et = et.elementType.canonicalType
+                if "StructType" in str(et.kind):
+                    for f in et:
+                        if f.kind == A.SymbolKind.Field:
+                            walk(f.type, pre + (f.name,))
+                    return
+                w = int(ct.elementType.bitWidth if ct.isUnpackedArray else ct.bitWidth)
             except Exception:
-                mem, w = False, 1
-            f, ln = self.loc(sym.location)
+                w = 1
+            dm = None
+            try:
+                if not mem and ct.hasFixedRange and "StructType" not in str(ct.kind):
+                    dm = (min(ct.fixedRange.lower, ct.fixedRange.upper), abs(ct.fixedRange.upper - ct.fixedRange.lower) + 1,
+                          ct.fixedRange.left >= ct.fixedRange.right)
+            except Exception:
+                dm = None
+            fl.append((pre, max(w, 1), int(mem), dm))
+        try:
+            walk(sym.type, ())
+        except Exception:
+            fl = []
+        if not fl or len(fl) >= 3000:
+            fl = [((), 1, 0, None)]
+        f, ln = self.loc(sym.location)
+        if inst is None:
+            inst = self.owner(sym)
+        lv = []
+        for pre, w, mem, dm in fl:
             i = len(self.sigs)
-            self.sig[p] = i
-            self.sigs.append(dict(path=p, name=sym.name, inst=inst if inst is not None else self.cur, width=max(w, 1),
-                                  kind="net" if sym.kind == self.A.SymbolKind.Net else "var", dir=None, is_top=0,
-                                  is_mem=int(mem), file=f, line=ln))
+            if dm:
+                self.dim[i] = dm
+            suf = "".join(x if x.startswith("[") else "." + x for x in pre)
+            self.sig[p + suf] = i
+            self.sigs.append(dict(path=p + suf, name=sym.name + suf, inst=inst, width=w,
+                                  kind="net" if sym.kind == A.SymbolKind.Net else "var", dir=None, is_top=0,
+                                  is_mem=mem, file=f, line=ln))
+            lv.append((pre, i))
+        self.leaf[p] = lv
+        return lv
+
+    def sub(self, sym, path):
+        """sym のうち、メンバ・添字の並び path より下の節点 → [(path からの相対の名前, 番号)]"""
+        lv = self.leaves(sym)
+        if not path:
+            return lv
+        out = []
+        for pre, i in lv:
+            n, ok = 0, True
+            for comp in path:
+                idx = isinstance(comp, tuple) or comp.startswith("[")
+                if idx:
+                    if n < len(pre) and pre[n].startswith("["):
+                        if (pre[n] in comp) if isinstance(comp, tuple) else (pre[n] == comp):
+                            n += 1
+                        else:
+                            ok = False
+                            break
+                    # 添字で分けていない配列: まとめたまま
+                else:
+                    while n < len(pre) and pre[n].startswith("["):      # 定数でない添字: どの要素も
+                        n += 1
+                    if n < len(pre) and pre[n] == comp:
+                        n += 1
+                    elif n < len(pre):
+                        ok = False
+                        break
+            if ok:
+                out.append((pre[n:], i))
+        return out or lv
+
+    def const(self, e):
+        try:
+            c = e.constant
+            return None if c is None else int(str(c))
+        except Exception:
+            return None
+
+    def is_sarr(self, t):
+        """構造体の配列か"""
+        try:
+            t = t.canonicalType
+            if not t.isArray:
+                return False
+            while t.isArray:
+                t = t.elementType.canonicalType
+            return "StructType" in str(t.kind)
+        except Exception:
+            return False
+
+    def kid(self, b, lo, hi):
+        """信号 b の一部(添字 lo..hi)の節点。定数の添字で読み書きされたときだけ作る"""
+        d = self.kids.setdefault(b, {})
+        i = d.get((lo, hi))
+        if i is None:
+            sg = self.sigs[b]
+            suf = f"[{lo}]" if lo == hi else f"[{hi}:{lo}]"
+            i = len(self.sigs)
+            self.sig[sg["path"] + suf] = i
+            self.sigs.append(dict(sg, path=sg["path"] + suf, name=sg["name"] + suf, width=hi - lo + 1, kind="part",
+                                  dir=None, is_top=0))
+            d[(lo, hi)] = i
         return i
+
+    def nodes(self, r):
+        sym, path, part = r
+        lv = self.sub(sym, path)
+        if part is None or len(lv) != 1 or self.sigs[lv[0][1]]["is_mem"] or self.nosplit:
+            return [i for _, i in lv]
+        return [self.kid(lv[0][1], *part)]
+
+    def chain(self, e):
+        """名前・メンバ・添字だけの式 → (信号, メンバ・添字の並び, 一部の範囲 or None)。それ以外は None"""
+        K = self.A.ExpressionKind
+        k = e.kind
+        if k in (K.NamedValue, K.HierarchicalValue):
+            s = e.symbol
+            if s.kind == self.A.SymbolKind.Net or (s.kind == self.A.SymbolKind.Variable and
+                                                   not str(s.lifetime).endswith("Automatic")):
+                return (s, (), None)
+            return None
+        if k == K.MemberAccess:
+            r = self.chain(e.value)
+            return None if r is None else (r[0], r[1] + (e.member.name,), r[2])
+        if k in (K.ElementSelect, K.RangeSelect):
+            r = self.chain(e.value)
+            if r is None or r[2] is not None:
+                return r
+            if k == K.ElementSelect:
+                lo = hi = self.const(e.selector)
+            else:
+                a, b2 = self.const(e.left), self.const(e.right)
+                sk = str(e.selectionKind).split(".")[-1]
+                if a is None or b2 is None:
+                    lo = hi = None
+                elif sk == "IndexedUp":
+                    lo, hi = a, a + b2 - 1
+                elif sk == "IndexedDown":
+                    lo, hi = a - b2 + 1, a
+                else:
+                    lo, hi = min(a, b2), max(a, b2)
+            if lo is None or hi - lo > 4096:
+                return r
+            try:
+                vt = e.value.type.canonicalType
+                if self.is_sarr(vt):                      # 構造体の配列: 要素ごとの節点へ
+                    comp = f"[{lo}]" if k == K.ElementSelect else tuple(f"[{i}]" for i in range(lo, hi + 1))
+                    return (r[0], r[1] + (comp,), None)
+                if "StructType" in str(vt.kind) or vt.isUnpackedArray:
+                    return r
+                return (r[0], r[1], (lo, hi))             # ベクタの一部
+            except Exception:
+                return r
+        if k == K.Conversion:
+            return self.chain(e.operand)
+        return None
+
+    def whole(self, e):
+        """ペアにできる式(メンバごとに 1 対 1 でつなげる)の節点の並び。だめなら None"""
+        K = self.A.ExpressionKind
+        x = e
+        while x.kind in (K.MemberAccess, K.ElementSelect, K.RangeSelect, K.Conversion):
+            x = x.operand if x.kind == K.Conversion else x.value
+        if x.kind not in (K.NamedValue, K.HierarchicalValue):
+            return None
+        r = self.chain(e)
+        return self.sub(r[0], r[1]) if r and r[2] is None else None
+
+    @staticmethod
+    def pairs(L, R):
+        """構造体どうしの対応 → [(左の節点の組, 右の節点の組)]。添字は順番で、メンバは名前で対応させる"""
+        nm = lambda X: [tuple(c for c in a if not c.startswith("[")) for a, _ in X]
+        if not L or not R:
+            return None
+        nl, nr = nm(L), nm(R)
+        if len(L) > 1 and len(L) == len(R) and nl == nr:
+            return [([a], [b]) for (_, a), (_, b) in zip(L, R)]
+        dl, dr = collections.defaultdict(list), collections.defaultdict(list)
+        for n, (_, i) in zip(nl, L):
+            dl[n].append(i)
+        for n, (_, i) in zip(nr, R):
+            dr[n].append(i)
+        if len(dl) > 1 and set(dl) == set(dr):            # 添字が定数でない配列: 同じ名前のメンバどうし
+            return [(dl[n], dr[n]) for n in dl]
+        return None
+
+    def fan(self, dsts, srcs, kind, role, direct, ln):
+        """srcs のすべて → dsts のすべて。本数が多いときは中継の節点を 1 つはさむ(辺の数を積にしない)"""
+        dsts, srcs = set(dsts), set(srcs)
+        if len(dsts) * len(srcs) <= 48 or min(len(dsts), len(srcs)) < 3:
+            for t in dsts:
+                for r in srcs:
+                    self.edge(t, r, kind, role, direct, ln)
+            return
+        self.nhub += 1
+        h = self.pseudo(f"{self.insts[self.cur]['path']}.$j{self.nhub}", "$j", "hub")
+        for r in srcs:
+            self.edge(h, r, "comb", "data", direct, ln)
+        for t in dsts:
+            self.edge(t, h, kind, role, 1, ln)
+
     def pseudo(self, path, name, kind="pseudo"):
         i = self.sig.get(path)
         if i is None:
@@ -121,13 +341,20 @@ class Builder:
             return out
         K = self.A.ExpressionKind
         k = e.kind
-        if k in (K.NamedValue, K.HierarchicalValue):
-            s = e.symbol
-            if s.kind in (self.A.SymbolKind.Net, self.A.SymbolKind.Variable):
-                if s.kind == self.A.SymbolKind.Variable and str(s.lifetime).endswith("Automatic"):
-                    return out
-                out.append(self.sid(s, self.owner(s)))
-            return out
+        if k in (K.NamedValue, K.HierarchicalValue, K.MemberAccess, K.ElementSelect, K.RangeSelect):
+            r = self.chain(e)
+            if r is not None:
+                out += self.nodes(r)
+                x = e
+                while x.kind in (K.MemberAccess, K.ElementSelect, K.RangeSelect, K.Conversion):
+                    if x.kind == K.ElementSelect:
+                        self.refs(x.selector, out)
+                    elif x.kind == K.RangeSelect:
+                        self.refs(x.left, out); self.refs(x.right, out)
+                    x = x.operand if x.kind == K.Conversion else x.value
+                return out
+            if k in (K.NamedValue, K.HierarchicalValue):
+                return out
         for a in ("left", "right", "operand", "value", "selector", "pred", "predicate"):
             x = getattr(e, a, None)
             if x is not None and hasattr(x, "kind"):
@@ -145,6 +372,7 @@ class Builder:
             for st in e.streams:
                 self.refs(st.operand, out)
         return out
+
     def owner(self, sym):
         """信号が属するインスタンス(generate ブロックの中は外側のインスタンス)"""
         try:
@@ -157,15 +385,19 @@ class Builder:
         """左辺: 代入先の信号を tg に、添字に出てくる信号を deps に"""
         K = self.A.ExpressionKind
         k = e.kind
-        if k in (K.NamedValue, K.HierarchicalValue):
-            self.refs(e, tg)
-        elif k == K.ElementSelect:
-            self.lhs(e.value, tg, deps); self.refs(e.selector, deps)
-        elif k == K.RangeSelect:
-            self.lhs(e.value, tg, deps); self.refs(e.left, deps); self.refs(e.right, deps)
-        elif k == K.MemberAccess:
-            self.lhs(e.value, tg, deps)
-        elif k == K.Concatenation:
+        if k in (K.NamedValue, K.HierarchicalValue, K.MemberAccess, K.ElementSelect, K.RangeSelect):
+            r = self.chain(e)
+            if r is not None:
+                tg += self.nodes(r)
+                x = e
+                while x.kind in (K.MemberAccess, K.ElementSelect, K.RangeSelect, K.Conversion):
+                    if x.kind == K.ElementSelect:
+                        self.refs(x.selector, deps)
+                    elif x.kind == K.RangeSelect:
+                        self.refs(x.left, deps); self.refs(x.right, deps)
+                    x = x.operand if x.kind == K.Conversion else x.value
+            return
+        if k == K.Concatenation:
             for o in e.operands:
                 self.lhs(o, tg, deps)
         elif k == K.Conversion:
@@ -174,6 +406,7 @@ class Builder:
             self.lhs(e.left, tg, deps)
         else:
             self.refs(e, tg)
+
     def plain(self, e):
         """論理を通らない式か(名前・選択・連接・幅の変換だけ)"""
         K = self.A.ExpressionKind
@@ -187,6 +420,11 @@ class Builder:
             return self.plain(e.value)
         if k == K.Conversion:
             return self.plain(e.operand)
+        if k == K.UnaryOp:                                # 反転だけ(1 入力)はグリッチを作らない
+            op = str(e.op).split(".")[-1]
+            if op == "BitwiseNot" or (op == "LogicalNot" and e.operand.type.bitWidth == 1):
+                return self.plain(e.operand)
+            return False
         if k == K.Concatenation:
             return all(self.plain(o) or o.kind in (K.IntegerLiteral, K.UnbasedUnsizedIntegerLiteral) for o in e.operands)
         return False
@@ -197,23 +435,53 @@ class Builder:
             return 0
     # ---- 文 ----
     def assign(self, e, kind, conds, clk=None, arst=()):
+        ln = self.line(e)
+        K = self.A.ExpressionKind
+        R = e.right
+        try:
+            while R.kind == K.Conversion and R.operand.type.bitWidth == R.type.bitWidth:
+                R = R.operand
+            if R.kind == K.Concatenation and len(R.operands) >= 2 and not self.nosplit:
+                rl = self.chain(e.left)
+                lt = e.left.type.canonicalType
+                lv = self.sub(rl[0], rl[1]) if rl and rl[2] is None else []
+                if (len(lv) == 1 and not self.sigs[lv[0][1]]["is_mem"] and lt.hasFixedRange and not lt.isUnpackedArray
+                        and "StructType" not in str(lt.kind) and lt.elementType.canonicalType.bitWidth == 1
+                        and lt.fixedRange.left >= lt.fixedRange.right
+                        and sum(o.type.bitWidth for o in R.operands) == lt.bitWidth):
+                    lo = lt.fixedRange.right                  # {a, b, c} の代入: ビットの範囲ごとに分けてつなぐ
+                    for o in reversed(list(R.operands)):
+                        w = o.type.bitWidth
+                        if w:
+                            self.emit([self.kid(lv[0][1], lo, lo + w - 1)], self.refs(o, []), self.plain(o), [], None,
+                                      kind, conds, clk, arst, ln)
+                            lo += w
+                    return
+        except Exception:
+            pass
         tg, deps = [], []
         self.lhs(e.left, tg, deps)
         rs = self.refs(e.right, [])
         d = self.plain(e.right) and not deps
-        ln = self.line(e)
-        for t in set(tg):
-            for r in set(rs):
-                self.edge(t, r, kind, "data", d, ln)
-            cd = {}
-            for r, pl in conds:
-                cd[r] = cd.get(r, True) and pl
-            for r in set(deps):
-                cd[r] = False
-            for r, pl in cd.items():
-                if r not in arst:
-                    self.edge(t, r, kind, "ctrl", pl, ln)
-            if kind == "seq":
+        pr = self.pairs(self.whole(e.left), self.whole(e.right))      # 構造体どうし: メンバごとに 1 対 1
+        self.emit(tg, rs, d, deps, pr, kind, conds, clk, arst, ln)
+
+    def emit(self, tg, rs, d, deps, pr, kind, conds, clk, arst, ln):
+        tg = set(tg)
+        if pr is not None:
+            for L, R in pr:
+                self.fan(L, R, kind, "data", d, ln)
+        else:
+            self.fan(tg, rs, kind, "data", d, ln)
+        cd = {}
+        for r, pl in conds:
+            cd[r] = cd.get(r, True) and pl
+        for r in set(deps):
+            cd[r] = False
+        self.fan(tg, [r for r, pl in cd.items() if pl and r not in arst], kind, "ctrl", 1, ln)
+        self.fan(tg, [r for r, pl in cd.items() if not pl and r not in arst], kind, "ctrl", 0, ln)
+        if kind == "seq":
+            for t in tg:
                 if not rs and not conds and not deps:
                     self.edge(t, t, "seq", "data", 1, ln)        # 定数だけの FF も残す
                 c0 = self.ffs.setdefault(t, clk)
@@ -221,6 +489,7 @@ class Builder:
                     self.nwarn["1 つの信号を複数のクロックで代入"] += 1
                 for r in arst:
                     self.edge(t, r, "arst", "ctrl", 1, ln)
+
     def stmt(self, s, kind, conds, clk=None, arst=()):
         if s is None:
             return
@@ -316,12 +585,13 @@ class Builder:
                 self.scope(m)
             elif k in (SK.Net, SK.Variable):
                 if not (k == SK.Variable and str(m.lifetime).endswith("Automatic")):
-                    t = self.sid(m)
+                    ts = self.leaves(m, self.cur)
                     ini = m.initializer if k == SK.Net else None      # wire x = 式;
                     if ini is not None:
                         d = self.plain(ini)
-                        for r in set(self.refs(ini, [])):
-                            self.edge(t, r, "comb", "data", d, self.line(ini))
+                        pr = self.pairs(ts, self.whole(ini))
+                        for L, R in (pr if pr is not None else [([t for _, t in ts], self.refs(ini, []))]):
+                            self.fan(L, R, "comb", "data", d, self.line(ini))
             elif k == SK.ContinuousAssign:
                 self.assign(m.assignment, "comb", [])
             elif k == SK.ProceduralBlock:
@@ -346,8 +616,8 @@ class Builder:
         path = m.hierarchicalPath
         self.insts.append(dict(path=path, name=m.name, module=m.definitionName, parent=par, depth=self.insts[par]["depth"] + 1,
                                blackbox=1, file=f, line=ln))
-        names = list(m.getPortNames())
-        for j, ex in enumerate(m.getPortConnections()):
+        names = list(getattr(m, "portNames", []) or [])
+        for j, ex in enumerate(getattr(m, "portConnections", []) or []):
             pn = names[j] if j < len(names) and names[j] else f"p{j}"
             e = getattr(ex, "expr", ex)
             if not hasattr(e, "kind"):
@@ -373,30 +643,33 @@ class Builder:
             p = pc.port
             if p.kind != A.SymbolKind.Port or p.internalSymbol is None:
                 continue
-            s = self.sid(p.internalSymbol, iid)
+            lv = self.leaves(p.internalSymbol, iid)
             d = str(p.direction).split(".")[-1]
             d = {"In": "in", "Out": "out", "InOut": "inout"}.get(d, "inout")
-            self.sigs[s].update(kind="port", dir=d, is_top=int(par is None))
+            for _, s in lv:
+                self.sigs[s].update(kind="port", dir=d, is_top=int(par is None))
             if pc.expression is not None:
-                conns.append((s, d, pc.expression))
+                conns.append((lv, d, pc.expression))
         if par is None:
             for p in inst.body.portList:
                 if p.kind == A.SymbolKind.Port and p.internalSymbol is not None:
-                    s = self.sid(p.internalSymbol, iid)
                     d = {"In": "in", "Out": "out"}.get(str(p.direction).split(".")[-1], "inout")
-                    self.sigs[s].update(kind="port", dir=d, is_top=1)
+                    for _, s in self.leaves(p.internalSymbol, iid):
+                        self.sigs[s].update(kind="port", dir=d, is_top=1)
         self.cur = par if par is not None else iid
-        for s, d, ex in conns:
+        for lv, d, ex in conns:
             e = ex.left if ex.kind == A.ExpressionKind.Assignment else ex
             ln2 = self.line(e)
+            pr = self.pairs(lv, self.whole(e))            # 構造体の端子: メンバごとに 1 対 1
             if d in ("in", "inout"):
-                for r in set(self.refs(e, [])):
-                    self.edge(s, r, "conn", "data", self.plain(e), ln2)
+                pl = self.plain(e)
+                for L, R in (pr if pr is not None else [([s for _, s in lv], self.refs(e, []))]):
+                    self.fan(L, R, "conn", "data", pl, ln2)
             if d in ("out", "inout"):
                 tg, dp = [], []
                 self.lhs(e, tg, dp)
-                for t in set(tg):
-                    self.edge(t, s, "conn", "data", 1, ln2)
+                for L, R in (pr if pr is not None else [([s for _, s in lv], tg)]):
+                    self.fan(R, L, "conn", "data", 1, ln2)
         self.cur = iid
         self.scope(inst.body)
         self.cur = par
@@ -405,11 +678,102 @@ class Builder:
         for t in tops:
             self.instance(t)
         driven = {e[0] for e in self.edges}
+        self.bbpin = set()
         for pin, r, d in self.bbconn:                     # ブラックボックス: ほかに駆動のない信号は出力とみなす
             if r in driven:
                 self.edges.append((pin, r, "conn", "data", d, self.sigs[pin]["inst"], 0))
             else:
                 self.edges.append((r, pin, "conn", "data", 1, self.sigs[pin]["inst"], 0))
+        self.parts()
+    def parts(self):
+        """一部だけ読み書きされた信号: 一部(part)と全体をつなぐ。
+        全体 B への書き込み → 各 part。part への書き込み → 重なる part と「全体の読み出し」B$all"""
+        fin, fout = collections.defaultdict(list), collections.defaultdict(list)
+        for n, ed in enumerate(self.edges):
+            fin[ed[0]].append(n)
+            fout[ed[1]].append(n)
+        add = []
+        # 1) そのままの受け渡し(Y = X、端子の接続)をさかのぼって、一部の範囲を元の信号まで運ぶ
+        kidset = {i for kd in self.kids.values() for i in kd.values()}
+        def copy_of(y):
+            if y in self.ffs or y not in self.dim or any(fin[i] for i in self.kids.get(y, {}).values() if i not in via):
+                return None
+            es = [self.edges[n] for n in fin[y] if self.edges[n][1] != y]
+            if len({e[1] for e in es}) != 1 or any(e[2] not in ("comb", "conn") or e[3] != "data" or not e[4] for e in es):
+                return None
+            x = es[0][1]
+            if x in kidset or x not in self.dim or self.dim[x][1:] != self.dim[y][1:] or self.sigs[x]["width"] != self.sigs[y]["width"]:
+                return None
+            return x
+        via, copied, work, nprop = set(), set(), list(self.kids), 0
+        while work and nprop < 400000:
+            y = work.pop()
+            x = copy_of(y)
+            if x is None:
+                continue
+            copied.add(y)
+            off = self.dim[x][0] - self.dim[y][0]
+            new = False
+            for (lo, hi), i in list(self.kids[y].items()):
+                if i in via:
+                    continue
+                via.add(i)
+                had = (lo + off, hi + off) in self.kids.get(x, {})
+                xk = self.kid(x, lo + off, hi + off)
+                kidset.add(xk)
+                new = new or not had
+                add.append((i, xk, "conn", "data", 1, self.sigs[y]["inst"], 0))
+                nprop += 1
+            if new:
+                work.append(x)
+        # 2) 一部と全体をつなぐ
+        for b, kd in list(self.kids.items()):
+            if b in copied:
+                continue
+            sg = self.sigs[b]
+            wr = [n for n in fin[b] if self.edges[n][1] != b]
+            W = bool(wr) or (sg["kind"] == "port" and sg["dir"] in ("in", "inout")) or b in self.bbpin
+            KW = {rg: i for rg, i in kd.items() if fin[i]}
+            for rg, i in kd.items():
+                if rg in KW:
+                    if i in self.ffs and b in self.ffs:           # FF の全体への代入は、一部の FF への代入でもある
+                        for n in wr:
+                            ed = self.edges[n]
+                            add.append((i,) + ed[1:])
+                    elif i not in self.ffs and W:
+                        add.append((i, b, "conn", "data", 1, sg["inst"], 0))
+                else:
+                    cov, pos = sorted(r for r in KW if r[0] <= rg[1] and r[1] >= rg[0]), rg[0]
+                    for lo, hi in cov:
+                        if lo > pos:
+                            break
+                        pos = max(pos, hi + 1)
+                    if W and pos <= rg[1]:                        # 一部の代入で覆われていない → 全体から
+                        add.append((i, b, "conn", "data", 1, sg["inst"], 0))
+            ks = sorted(kd.items())
+            for x, (rx, ix) in enumerate(ks):                     # 重なる part どうし
+                for ry, iy in ks[x + 1:]:
+                    if ry[0] > rx[1]:
+                        break
+                    if rx in KW:
+                        add.append((iy, ix, "conn", "data", 1, sg["inst"], 0))
+                    if ry in KW:
+                        add.append((ix, iy, "conn", "data", 1, sg["inst"], 0))
+            if KW:
+                self.cur = sg["inst"]
+                br = self.pseudo(sg["path"] + "$all", sg["name"], "all")
+                self.sigs[br].update(is_top=sg["is_top"], width=sg["width"], file=sg["file"], line=sg["line"])
+                kset = set(kd.values())
+                for n in fout[b]:                         # 全体を読んでいた辺は B$all から読む
+                    ed = self.edges[n]
+                    if ed[0] not in kset and ed[0] != b:
+                        self.edges[n] = (ed[0], br) + ed[2:]
+                if W or b in self.ffs:
+                    add.append((br, b, "conn", "data", 1, sg["inst"], 0))
+                for i in KW.values():
+                    add.append((br, i, "conn", "data", 1, sg["inst"], 0))
+        self.edges += add
+
     def save(self, path, meta):
         if os.path.exists(path):
             os.remove(path)
@@ -476,8 +840,9 @@ class Analyzer:
                 res = root(next(iter(srcs)))
             else:
                 rs = {root(s) for s in srcs}
-                ck = {r for r in rs if r[1] in ("primary", "blackbox", "mux", "undriven") and clocky(r[0])}
-                if len(ck) == 1 and all(r in ck or r[1] in ("generated", "primary", "undriven", "loop") for r in rs):
+                ck = {r for r in rs if r[0] in direct_root or
+                      (r[1] in ("primary", "blackbox", "mux", "undriven") and clocky(r[0]))}
+                if len(ck) == 1:
                     res = next(iter(ck))                  # クロック 1 本 + イネーブル = ゲート
                     self.gate_pts.add(x)
                 elif len(ck) >= 2:
@@ -549,7 +914,8 @@ class Analyzer:
                 tgt[s] = tgt.get(s, False) or not d
             else:
                 for t, lg in self.cone(s, memo, set()).items():
-                    tgt[t] = tgt.get(t, False) or lg or not d
+                    if t != f:                            # 自分自身の保持(q <= en ? d : q)は入力に数えない
+                        tgt[t] = tgt.get(t, False) or lg or not d
         return data, ctrl
     def next_stage(self, f, memo):
         """f を論理なしでそのまま受ける同じドメインの FF(2 段目)と、それ以外で使われているか"""
@@ -574,74 +940,284 @@ class Analyzer:
                         other = True                       # そのまま出力端子へ
                     st.append((d, direct and bool(di)))
         return nxt, other
-    def cdc(self, static=()):
+    def anc(self, i):
+        out = []
+        while i is not None:
+            out.append(i)
+            i = self.ipar.get(i)
+        return out
+
+    def cdc(self, static=(), async_in=()):
         self.domains()
-        pats = [re.compile(p) for p in static]
-        stat = {f for f in self.ffclk if any(p.search(self.S[f]["path"]) for p in pats)}
+        self.ipar = {r[0]: r[1] for r in self.db.execute("SELECT id,parent FROM instance")}
+        S, dom, fam = self.S, self.dom, self.fam
+        for p in [re.compile(x) for x in async_in]:       # 非同期と宣言した入力端子: それぞれ別のドメイン
+            for i, sg in S.items():
+                if sg["is_top"] and sg["dir"] == "in" and not self.fin[i] and p.search(sg["path"]) and i not in self.kinds:
+                    dom[i] = i; fam[i] = i; self.kinds[i] = "async_in"
+        roots = {d for d, k in self.kinds.items() if k in ("primary", "blackbox", "mux", "undriven")}
+        roots |= {x for xs in self.mux_src.values() for x in xs if x not in self.ffclk}      # 切替の元のクロックも
         memo = {}
         self.inp = {f: self.ff_inputs(f, memo) for f in self.ffclk}
-        wmem = {s for s in self.ffclk if self.S[s]["is_mem"]}
-        rows = []
-        for f in self.ffclk:
+        pats = [re.compile(p) for p in static]
+        stat = {f for f in self.ffclk if any(p.search(S[f]["path"]) for p in pats)}
+        wmem = {x for x in self.ffclk if S[x]["is_mem"]}
+        nsc = {}
+
+        def nstage(x):
+            if x not in nsc:
+                nsc[x] = self.next_stage(x, memo)
+            return nsc[x]
+
+        def cross(f, excl):
             data, ctrl = self.inp[f]
-            fm = self.fam[self.dom[f]]
-            xs_d = {t: lg for t, lg in data.items() if t in self.dom and self.fam[self.dom[t]] != fm}
-            xs_c = {t: lg for t, lg in ctrl.items() if t in self.dom and self.fam[self.dom[t]] != fm}
-            if not xs_d and not xs_c:
-                continue
-            w = self.S[f]["width"]
-            st_src = {t for t in list(xs_d) + list(xs_c) if t in stat}
-            if st_src:                                    # 準静的(動作中に変えない設定)と宣言された送り側は除く
-                for t in st_src:
-                    rows.append((t, f, self.dom[t], self.dom[f], "static", 1, 0, w))
-                xs_d = {t: v for t, v in xs_d.items() if t not in stat}
-                xs_c = {t: v for t, v in xs_c.items() if t not in stat}
-                data = {t: v for t, v in data.items() if t not in stat}
-                ctrl = {t: v for t, v in ctrl.items() if t not in stat}
-                if not xs_d and not xs_c:
-                    continue
-            if not data and len(xs_c) == 1 and not next(iter(xs_c.values())):
+            fm = fam[dom[f]]
+            data = {t: v for t, v in data.items() if t not in excl}
+            ctrl = {t: v for t, v in ctrl.items() if t not in excl}
+            xd = {t: lg for t, lg in data.items() if t in dom and fam[dom[t]] != fm}
+            xc = {t: lg for t, lg in ctrl.items() if t in dom and fam[dom[t]] != fm}
+            if not data and len(xc) == 1 and not next(iter(xc.values())):
                 # if (x) q <= 1; else q <= 0; の形: x をそのまま受けるのと同じ
-                data, xs_d, xs_c = dict(xs_c), dict(xs_c), {}
-                ctrl = {t: v for t, v in ctrl.items() if t not in xs_d}
-            nxt, other = self.next_stage(f, memo)
-            stages = 1
-            if not xs_c and len(data) == 1 and not next(iter(data.values())) and not any(t in wmem for t in xs_d):
-                # 1 本を論理なしで受けている
-                if nxt:
-                    x, stages = nxt[0], 2
-                    for _ in range(8):
-                        n2, _o = self.next_stage(x, memo)
-                        if not n2:
-                            break
-                        x, stages = n2[0], stages + 1
-                    if other:
-                        cls = "sync_tap"
-                    elif w == 1:
-                        cls = "sync"
-                    elif re.search(r"gr[ae]?y", self.S[f]["name"] + self.S[next(iter(xs_d))]["name"], re.I):
-                        cls = "sync_gray"
+                data, xd, xc = dict(xc), dict(xc), {}
+                ctrl = {t: v for t, v in ctrl.items() if t not in xd}
+            return data, ctrl, xd, xc
+
+        def chain_of(f, data, xd, xc):
+            """f が同期化の 1 段目なら、段の並び [f, 2 段目, ...]。違えば None"""
+            if xc or len(data) != 1 or any(t in wmem for t in xd):
+                return None
+            if next(iter(data.values())) and S[next(iter(data))]["width"] != 1:
+                return None                               # 多ビットを論理でまとめてから同期化: グリッチ
+            # 送り側が 1 ビット 1 本だけなら、途中の反転・バッファではグリッチは出ない
+            nxt, _ = nstage(f)
+            if not nxt:
+                return None
+            ch, x = [f], nxt[0]
+            for _ in range(8):
+                ch.append(x)
+                n2, _o = nstage(x)
+                if not n2 or n2[0] in ch:
+                    break
+                x = n2[0]
+            return ch
+        # ---- 1 回目: 同期化の鎖を見つける ----
+        cand = [f for f in self.ffclk if any((t in dom and fam[dom[t]] != fam[dom[f]]) or (t in roots and t != dom[f])
+                                             for t in list(self.inp[f][0]) + list(self.inp[f][1]))]
+        chains, chain_end, marks = {}, {}, collections.defaultdict(set)
+        for f in cand:
+            data, ctrl, xd, xc = cross(f, stat)
+            if not xd:
+                continue
+            ch = chain_of(f, data, xd, xc)
+            if ch:
+                src = next(iter(xd))
+                chains[f] = ch
+                for x in ch[1:]:
+                    chain_end[x] = (src, fam[dom[src]], f)
+                a1, a2 = self.anc(S[src]["inst"]), set(self.anc(S[f]["inst"]))
+                lca = next((i for i in a1 if i in a2), None)
+                for j in [lca, self.ipar.get(lca)]:       # この階層(とその 1 つ上)に、同期化した制御がある
+                    if j is not None:
+                        marks[j].add((fam[dom[src]], fam[dom[f]]))
+        def via_sync(start, fm, srcf, hops=3):
+            """start(受け側ドメインの信号)が、srcf のドメインから同期化した信号で作られているか(FF を hops 段まで戻る)"""
+            seen, fr = set(start), list(start)
+            for _ in range(hops + 1):
+                nx = []
+                for t in fr:
+                    if t in chain_end and chain_end[t][1] in srcf:
+                        return chain_end[t][2]            # その同期化の 1 段目
+                    if t in self.inp:
+                        for u in list(self.inp[t][0]) + list(self.inp[t][1]):
+                            if u not in seen and u in dom and fam[dom[u]] == fm:
+                                seen.add(u); nx.append(u)
+                fr = nx
+                if not fr or len(seen) > 400:
+                    break
+            return None
+        def bcone(f):
+            seen, st = set(), [s for s, k, r, d in self.fin[f] if k == "seq"]
+            while st and len(seen) < 30000:
+                x = st.pop()
+                if x in seen:
+                    continue
+                seen.add(x)
+                if not self.terminal(x):
+                    st += [s for s, k, r, d in self.fin[x] if k != "arst"]
+            return seen
+
+        def qualified(t, f, fm, bc):
+            """t が f に届く前に、必ず「送り側ドメインから同期化した信号」と組み合わせ論理で合わさっているか(ゲートして渡す形)"""
+            st, seen, gates = [t], {t}, set()
+            while st:
+                x = st.pop()
+                for d, k, r, di in self.fout[x]:
+                    if k == "arst" or (d != f and d not in bc):
+                        continue
+                    if d == f:
+                        if not (k == "seq" and not di):
+                            return None                   # そのまま FF に入っている
+                        gates.add(None)
+                    elif di:
+                        if d not in seen:
+                            seen.add(d); st.append(d)
                     else:
-                        cls = "sync_bus"
-                elif any(t in self.dom and self.fam[self.dom[t]] == fm for t in ctrl):
-                    cls = "data_enable"                   # 受け側ドメインの条件(イネーブル)で取り込む
+                        gates.add(d)
+            if not gates or None in gates:
+                return None
+            sf = fam[dom[t]]
+            for g in gates:
+                cn = self.cone(g, memo, set())
+                mine = [u for u in cn if u in dom and fam[dom[u]] == fm]
+                v = via_sync(mine, fm, {sf}) if mine and not any(u in dom and fam[dom[u]] not in (fm, sf) for u in cn) else None
+                if v is None:
+                    return None
+            return v
+        # 非同期 FIFO のメモリ: 同じ階層(か 1 つ上)に 書き側→読み側 の同期化(書きポインタ)があり、
+        # 書き込みの条件(満杯の判定)が 読み側 から同期化した信号(読みポインタ)で作られている
+        fifo, fvia = set(), {}
+        for m in wmem:
+            a = fam[dom[m]]
+            mk = marks.get(S[m]["inst"], ())
+            others = {y for x, y in mk if x == a}
+            v = via_sync(list(self.inp[m][1]), a, others) if others else None
+            if v is not None:
+                fifo.add(m)
+                fvia[m] = v
+        self.fifo_mem = fifo
+        # ---- 2 回目: 分類 ----
+        rows = []
+        self.chain_rows = {}
+        for f in cand:
+            w = S[f]["width"]
+            d0, c0 = self.inp[f]
+            fm = fam[dom[f]]
+            for t in set(d0) | set(c0):
+                if t in dom and fam[dom[t]] != fm:
+                    if t in stat:
+                        rows.append((t, f, dom[t], dom[f], "static", 1, 0, w, None))
+                    elif t in fifo:
+                        rows.append((t, f, dom[t], dom[f], "fifo", 1, 0, w, fvia[t]))
+                if t in roots and t != dom[f] and fam.get(t, t) != fm and self.kinds.get(t) != "async_in":
+                    rows.append((t, f, t, dom[f], "clk_as_data", 1, 0, w, None))
+            data, ctrl, xd, xc = cross(f, stat | fifo)
+            xd = {t: v for t, v in xd.items() if not (t in roots and self.kinds.get(t) != "async_in")}
+            xc = {t: v for t, v in xc.items() if not (t in roots and self.kinds.get(t) != "async_in")}
+            if not xd and not xc:
+                continue
+            stages, via = 1, None
+            nxt, other = nstage(f)
+            same_ctrl = [t for t in ctrl if t in dom and fam[dom[t]] == fm]
+            ch = chain_of(f, data, xd, xc) if xd else None
+            if ch:
+                stages = len(ch)
+                use = collections.Counter()
+                for x in ch[1:]:
+                    for y in {d for d, k, r, di in self.fout[x] if d not in ch}:
+                        use[y] += 1
+                if other:
+                    cls = "sync_tap"
+                elif w == 1:
+                    cls = "sync_pulse" if any(v > 1 for v in use.values()) else "sync"
+                elif re.search(r"gr[ae]?y", S[f]["name"] + S[next(iter(xd))]["name"], re.I):
+                    cls = "sync_gray"
                 else:
-                    cls = "no_sync"
-            elif any(t in wmem for t in xs_d) and not xs_c:
+                    cls = "sync_bus"
+            elif not xc and len(data) == 1 and not next(iter(data.values())):
+                cls = "data_enable" if same_ctrl else "no_sync"
+            elif any(t in wmem for t in xd) and not xc:
                 cls = "mem"
-            elif not xs_c and nxt and not other:
+            elif not xc and nxt and not other:
                 cls = "sync_logic"
-            elif not xs_c and any(t in self.dom and self.fam[self.dom[t]] == fm for t in ctrl):
+            elif not xc and same_ctrl:
                 cls = "data_enable"
             else:
                 cls = "no_sync"
-            for t, lg in {**xs_c, **xs_d}.items():
-                rows.append((t, f, self.dom[t], self.dom[f], cls, stages, int(lg), w))
+            if cls == "data_enable":
+                via = via_sync(same_ctrl, fm, {fam[dom[t]] for t in xd})
+                if via is not None:
+                    cls = "handshake"                     # 条件が、送り側ドメインから同期化した信号で作られている(MCP)
+            if cls == "no_sync":
+                bc = bcone(f)
+                qs = [qualified(t, f, fm, bc) for t in {**xc, **xd}]
+                if all(q is not None for q in qs):
+                    cls, via = "gated", qs[0]             # 同期化した信号と組み合わせてから使っている
+            for t, lg in {**xc, **xd}.items():
+                rows.append((t, f, dom[t], dom[f], cls, stages, int(lg), w, via))
+        # ---- 再収束: 別々に同期化した信号(同じ送り側ドメイン)を 1 つの FF で合わせている ----
+        ends = {}
+        for x, (src, sf, first) in chain_end.items():
+            n2, _ = nstage(x)
+            if not n2 or n2[0] not in chain_end:          # 鎖の最後の段
+                ends[x] = (src, sf, first)
+        for f in self.ffclk:
+            if f in chain_end or f in chains:
+                continue
+            d0, c0 = self.inp[f]
+            hit = collections.defaultdict(set)
+            for t in set(d0) | set(c0):
+                if t in ends and S[ends[t][2]]["width"] == 1:
+                    hit[ends[t][1]].add(t)
+            for sf, ts in hit.items():
+                by = collections.defaultdict(set)         # 送り側が同じインスタンス = 関係のある信号とみなす
+                for t in ts:
+                    by[S[ends[t][0]]["inst"]].add(t)
+                for g in by.values():
+                    if len({ends[t][2] for t in g}) >= 2:
+                        for t in g:
+                            rows.append((ends[t][0], f, dom[ends[t][0]], dom[f], "reconv", 1, 0, S[f]["width"], ends[t][2]))
+        self.rdc_rows = self.rdc(memo)
         return rows
+
+    def rdc(self, memo):
+        """非同期リセットの出どころ: FF ごとに、リセット端子を逆にたどる → [(源, 受け側ドメイン, 分類, FF 数, 例)]"""
+        S, dom, fam = self.S, self.dom, self.fam
+        tm, info = {}, {}
+        for f in self.ffclk:
+            rs = [s for s, k, r, d in self.fin[f] if k == "arst"]
+            if not rs:
+                continue
+            terms = {}
+            for r in rs:
+                if r not in tm:
+                    tm[r] = {r: False} if self.terminal(r) else self.cone(r, memo, set())
+                for t, lg in tm[r].items():
+                    sg = S[t]
+                    if t in self.ffclk or sg["is_top"] or sg["kind"] == "pin" or self.fin[t]:      # 定数につないだ端子は除く
+                        terms[t] = terms.get(t, False) or lg
+            if terms:
+                info[f] = terms
+        used = {t for terms in info.values() for t in terms if t in self.ffclk}     # リセットを出している FF
+        rsync = set(used)
+        for _ in range(4):                                # その前段(そのまま次の段に渡すだけの FF)も同期化回路
+            for f in info:
+                if f not in rsync:
+                    outs = {d for d, k, r, di in self.fout[f] if d != f}
+                    if outs and all(d in rsync and k == "seq" and di for d, k, r, di in self.fout[f] if d != f):
+                        rsync.add(f)
+        agg, ex = collections.Counter(), {}
+        for f, terms in info.items():
+            ffs = [t for t in terms if t in self.ffclk]
+            fm = fam[dom[f]]
+            if f in rsync and not any(fam[dom[t]] != fm for t in ffs):
+                cls = "rst_sync"
+            elif any(fam[dom[t]] != fm for t in ffs):
+                cls = "rst_cross"
+            elif len(ffs) >= 2:
+                cls = "rst_logic"
+            elif ffs:
+                cls = "rst_ok"
+            else:
+                cls = "rst_input"
+            src = min(ffs or terms, key=lambda t: S[t]["path"]) if terms else f
+            agg[(src, dom[f], cls)] += 1
+            ex.setdefault((src, dom[f], cls), f)
+        return [(src, dm, cls, n, ex[(src, dm, cls)]) for (src, dm, cls), n in agg.items()]
+
     def save(self, rows):
         db = self.db
         db.execute("DELETE FROM clock"); db.execute("DELETE FROM cdc")
-        nff = collections.Counter(self.dom.values())
+        nff = collections.Counter(self.dom[f] for f in self.ffclk)
         gated = collections.Counter()
         for f, c in self.ffclk.items():
             x, seen = c, set()
@@ -658,8 +1234,13 @@ class Analyzer:
             par = self.mux_src.get(dm) or self.gen_src.get(dm) or ([self.dom[dm]] if dm in self.dom else [])
             db.execute("INSERT INTO clock VALUES(?,?,?,?,?,?,?,?)",
                        (dm, dm, self.name(dm), k, self.fam[dm], ", ".join(self.name(p) for p in par), nff[dm], gated[dm]))
-        db.executemany("UPDATE ff SET domain=? WHERE sig=?", [(d, f) for f, d in self.dom.items()])
-        db.executemany("INSERT INTO cdc(src,dst,src_clk,dst_clk,class,stages,logic,width) VALUES(?,?,?,?,?,?,?,?)", rows)
+        for dm in sorted({r[2] for r in rows} - set(nff)):        # FF のないドメイン(非同期の入力端子・データに使ったクロック)
+            k = self.kinds.get(dm, "?")
+            db.execute("INSERT INTO clock VALUES(?,?,?,?,?,?,?,?)", (dm, dm, self.name(dm), k, dm, "", 0, 0))
+        db.execute("DELETE FROM rdc")
+        db.executemany("INSERT INTO rdc(src,dst_clk,class,n_ff,example) VALUES(?,?,?,?,?)", self.rdc_rows)
+        db.executemany("UPDATE ff SET domain=? WHERE sig=? AND sig IN (SELECT sig FROM ff)", [(d, f) for f, d in self.dom.items()])
+        db.executemany("INSERT INTO cdc(src,dst,src_clk,dst_clk,class,stages,logic,width,via) VALUES(?,?,?,?,?,?,?,?,?)", rows)
         db.commit()
 
 # ================= 3. 出力 =================
@@ -678,7 +1259,7 @@ def report(db, out):
     for i, name, kind, fam, par, nff, ng in db.execute("SELECT id,name,kind,family,parent,n_ff,n_gated FROM clock ORDER BY n_ff DESC"):
         L.append(f"| `{short(name)}` | {kind} | `{cn.get(fam, '?')}` | {' '.join('`' + short(p) + '`' for p in par.split(', ') if p)} | {nff} | {ng or ''} |")
     L += ["", "## 乗り換え(受け側の FF 単位)", "", "| 送り側 → 受け側 | " + " | ".join(CLASS_JA[c] for c in OK_CLASSES + REVIEW + BAD) + " |",
-          "|---|" + "---|" * 8]
+          "|---|" + "---|" * len(OK_CLASSES + REVIEW + BAD)]
     agg = collections.defaultdict(collections.Counter)
     for sc, dc, cls, cnt in db.execute("SELECT src_clk,dst_clk,class,count(DISTINCT dst) FROM cdc WHERE class!='static' GROUP BY 1,2,3"):
         agg[(sc, dc)][cls] = cnt
@@ -707,6 +1288,35 @@ def report(db, out):
                      + f" | `{short(scn)}` → `{short(dcn)}` | {f}:{ln} |")
         if len(rows) > 400:
             L.append(f"| …ほか {len(rows) - 400} 件 | | | | | | |")
+    # 階層の深さ: 送り側から共通の親まで何段上がり、受け側まで何段下がるか
+    par = {r[0]: (r[1], r[2]) for r in db.execute("SELECT id,parent,depth FROM instance")}
+    def chain(i):
+        o = []
+        while i is not None:
+            o.append(i); i = par[i][0]
+        return o
+    hop, dmax = collections.Counter(), collections.Counter()
+    for si, di in db.execute("SELECT DISTINCT s.inst, d.inst FROM cdc c JOIN signal s ON s.id=c.src JOIN signal d ON d.id=c.dst"):
+        a, b = chain(si), chain(di)
+        sb = set(b)
+        l = next(x for x in a if x in sb)
+        hop[(par[si][1] - par[l][1]) + (par[di][1] - par[l][1])] += 1
+        dmax[max(par[si][1], par[di][1])] += 1
+    if hop:
+        L += ["", "## 階層の深さ(乗り換えの両端)", "",
+              f"インスタンスの深さは最大 {max(v[1] for v in par.values())} 段。端のある一番深い階層は {max(dmax)} 段。"
+              f"送り側から共通の親まで上がり、受け側まで下がる段数の合計は最大 {max(hop)} 段。", "",
+              "| 上がり + 下がりの段数 | 送り側と受け側のインスタンスの組 |", "|---|---|"]
+        L += [f"| {k} | {hop[k]} |" for k in sorted(hop)]
+    rd = db.execute("""SELECT r.class, s.path, k.name, r.n_ff, e.path FROM rdc r JOIN signal s ON s.id=r.src
+                       JOIN clock k ON k.id=r.dst_clk JOIN signal e ON e.id=r.example ORDER BY r.class, r.n_ff DESC""").fetchall()
+    if rd:
+        L += ["", "## 非同期リセット(RDC)", "", "FF の非同期リセット端子を逆にたどった結果です(リセットの源・受け側のドメインごと)。", "",
+              "| 分類 | リセットの源 | 受け側のドメイン | FF | 例 |", "|---|---|---|---|---|"]
+        for cls, sp, kn, n, ep in rd[:200]:
+            L.append(f"| {RDC_JA[cls]} | `{short(sp)}` | `{short(kn)}` | {n} | `{short(ep)}` |")
+        if len(rd) > 200:
+            L.append(f"| …ほか {len(rd) - 200} 行 | | | | |")
     os.makedirs(out, exist_ok=True)
     open(os.path.join(out, "cdc.md"), "w", encoding="utf-8").write("\n".join(L) + "\n")
     return agg, cn
@@ -820,6 +1430,84 @@ def iface_yaml(db, inst):
     return {"interface": {"title": f"{cname}({cmod})の接続 — RTL の接続データベースから", "center": center,
                           "left": list(peers["left"].values()), "right": list(peers["right"].values()), "nets": nets}}
 
+def show_path(db, src_re, dst_re):
+    """受け側の FF から組み合わせの辺を逆にたどり、送り側の FF までの経路を 1 本出す"""
+    ps, pd = re.compile(src_re), re.compile(dst_re)
+    ff = {r[0] for r in db.execute("SELECT sig FROM ff")}
+    cand = [(s, d) for s, d, sp, dp in db.execute("""SELECT c.src, c.dst, s.path, d.path FROM cdc c JOIN signal s ON s.id=c.src
+                                                     JOIN signal d ON d.id=c.dst""") if ps.search(sp) and pd.search(dp)]
+    if not cand:
+        print("当てはまる乗り換えがありません")
+        return 1
+    sid, did = cand[0]
+    prev, q = {did: None}, collections.deque([did])
+    while q:
+        x = q.popleft()
+        if x == sid:
+            break
+        for s_, k, di, ln in db.execute("SELECT src,kind,direct,line FROM edge WHERE dst=? AND kind!='arst'", (x,)):
+            if s_ not in prev and (s_ not in ff or s_ == sid):
+                prev[s_] = (x, k, di, ln); q.append(s_)
+    if sid not in prev:
+        print("経路が見つかりません")
+        return 1
+    x, n = sid, 0
+    print("| # | 信号(階層パス) | 種類 | 次への辺 | 行 |\n|---|---|---|---|---|")
+    while x is not None:
+        pth, kind, f_ = db.execute("SELECT path,kind,file FROM signal WHERE id=?", (x,)).fetchone()
+        e = prev[x]
+        print(f"| {n} | `{pth}` | {'FF' if x in ff else kind} | " + (f"{e[1]}{'' if e[2] else '(論理)'} | {f_}:{e[3]}" if e else " | ") + " |")
+        x, n = (e[0] if e else None), n + 1
+    return 0
+
+
+def selftest(exp_path):
+    """cdc_expected.yaml: 受け側 FF(正規表現)→ 分類。ほかの乗り換えが出たら失敗、出てはいけない所に出ても失敗"""
+    import yaml, tempfile
+    base = os.path.dirname(os.path.abspath(exp_path))
+    bad = 0
+    for t in yaml.safe_load(open(exp_path, encoding="utf-8")):
+        with tempfile.TemporaryDirectory() as td:
+            bd = Builder()
+            bd.build(bd.compile([os.path.join(base, f) for f in t["files"]], t["top"], [], [], ""))
+            db = bd.save(os.path.join(td, "t.db"), {"top": t["top"], "files": "1", "errors": str(len(bd.errors))})
+            an = Analyzer(db)
+            an.save(an.cdc(t.get("static", []), t.get("async_in", [])))
+            got = collections.defaultdict(set)
+            for dp, cls in db.execute("SELECT d.path, c.class FROM cdc c JOIN signal d ON d.id=c.dst"):
+                got[dp].add(cls)
+            used, ng = set(), []
+            for pat, cls in t.get("expect", {}).items():
+                hit = [p for p in got if re.search(pat, p)]
+                used |= set(hit)
+                if not hit:
+                    ng.append(f"出ていない: {pat}(期待 {cls})")
+                for p in hit:
+                    if got[p] != {cls}:
+                        ng.append(f"分類が違う: {p} = {sorted(got[p])}(期待 {cls})")
+            for pat in t.get("none", []):
+                for p in got:
+                    if re.search(pat, p):
+                        used.add(p)
+                        ng.append(f"出てはいけない: {p} = {sorted(got[p])}")
+            for p in sorted(set(got) - used):
+                ng.append(f"期待にない乗り換え: {p} = {sorted(got[p])}")
+            rgot = {(short(sp), short(kn), cls): n for sp, kn, cls, n in db.execute(
+                "SELECT s.path,k.name,r.class,r.n_ff FROM rdc r JOIN signal s ON s.id=r.src JOIN clock k ON k.id=r.dst_clk")}
+            for src, clk, cls, n in t.get("rdc", []):
+                if rgot.get((src, clk, cls)) != n:
+                    ng.append(f"RDC が違う: {src} → {clk} {cls} = {rgot.get((src, clk, cls))}(期待 {n})")
+            dep = db.execute("SELECT max(depth) FROM instance").fetchone()[0]
+            if t.get("depth") and dep != t["depth"]:
+                ng.append(f"階層の深さ {dep}(期待 {t['depth']})")
+            print(f"{'OK ' if not ng else 'NG '} {t['name']}: 期待 {len(t.get('expect', {}))} 件 / 出力 {len(got)} 件 / 階層の深さ {dep}"
+                  + (f" / slang エラー {len(bd.errors)}" if bd.errors else ""))
+            for x in ng:
+                print("    " + x)
+            bad += len(ng) + len(bd.errors)
+    return 1 if bad else 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -830,11 +1518,21 @@ def main():
     a = sub.add_parser("analyze")
     a.add_argument("db"); a.add_argument("-o", "--out", default="out"); a.add_argument("--png", action="store_true")
     a.add_argument("--static", action="append", default=[], help="準静的な送り側(階層パスの正規表現)。動作中に変えない設定レジスタ")
+    a.add_argument("--async-in", action="append", default=[], help="非同期の入力端子(階層パスの正規表現)。それぞれ別のドメインとして扱う")
     i = sub.add_parser("iface")
     i.add_argument("db"); i.add_argument("--inst", required=True); i.add_argument("-o", "--out", default="iface.yaml")
     s = sub.add_parser("stats")
     s.add_argument("db")
+    w = sub.add_parser("path", help="送り側から受け側まで、どの信号を通って届くか(階層をまたぐ経路)を出す")
+    w.add_argument("db"); w.add_argument("--src", required=True); w.add_argument("--dst", required=True)
+    t = sub.add_parser("selftest", help="答えのわかっている RTL(examples/rtl/cdc_expected.yaml)で分類を確かめる")
+    t.add_argument("expected", nargs="?", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "examples", "rtl",
+                                                                "cdc_expected.yaml"))
     g = ap.parse_args()
+    if g.cmd == "selftest":
+        sys.exit(selftest(g.expected))
+    if g.cmd == "path":
+        sys.exit(show_path(sqlite3.connect(g.db), g.src, g.dst))
     if g.cmd == "build":
         files = list(g.files)
         for fl in g.f:
@@ -870,11 +1568,13 @@ def main():
         db = sqlite3.connect(g.db)
         t0 = time.time()
         an = Analyzer(db)
-        rows = an.cdc(g.static)
+        rows = an.cdc(g.static, g.async_in)
         an.save(rows)
         agg, cn = report(db, g.out)
         p = cdc_map(db, g.out, agg, cn, g.png)
-        print(f"解析 {time.time() - t0:.1f}s → {g.out}/cdc.md, {os.path.basename(p)}")
+        import cdcdiag
+        cdcdiag.hier(db, g.out, png=g.png)
+        print(f"解析 {time.time() - t0:.1f}s → {g.out}/cdc.md, {os.path.basename(p)}, cdc_hier.svg")
         for i, name, kind, nff in db.execute("SELECT id,name,kind,n_ff FROM clock ORDER BY n_ff DESC LIMIT 12"):
             print(f"  ドメイン {short(name)}: {kind}, FF {nff}")
         for cls, n in db.execute("SELECT class, count(DISTINCT dst) FROM cdc GROUP BY 1 ORDER BY 2 DESC"):

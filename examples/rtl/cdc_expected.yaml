@@ -1,0 +1,58 @@
+# rtldb.py selftest の答え。受け側の FF(階層パスの正規表現)→ 分類。
+# ここにない乗り換えが出たら失敗、none の所に出ても失敗(見逃しと誤検出の両方を確かめる)。
+- name: 分類 21 種(cdc_cases.v)
+  files: [cdc_cases.v]
+  top: cdc_cases
+  async_in: ['ext_']                     # 非同期の入力端子
+  expect:
+    'u_ok\.s1$': sync                    # 1. 2 段で同期化
+    'cdc_cases\.b_bad$': no_sync         # 2. 同期化なし
+    'u_logic\.s1$': sync_logic           # 3. 同期化の前に論理
+    'u_bus\.s1$': sync_bus               # 4. 多ビットをそのまま同期化
+    'u_gray\.s1$': sync_gray             # 5. グレイコード
+    'u_req\.s1$': sync                   # 6. 要求の同期化
+    'cdc_cases\.dout$': handshake        #    同期化した要求でデータを取り込む
+    'cdc_cases\.t1$': sync_tap           # 7. 1 段目を論理で使う
+    'cdc_cases\.rd$': mem                # 8. 別クロックで書くメモリ(ポインタの同期化なし)
+    'cdc_cases\.o_mux$': no_sync         # 11. クロック切替の先で受ける
+    'cdc_cases\.sh\[0\]$': sync          # 12. シフトレジスタ形 sh <= {sh[0], x}
+    'cdc_cases\.f_q$': fifo              # 13. 非同期 FIFO のデータ
+    'u_fifo\.u_w2r\.s1$': sync_gray      #     書きポインタ
+    'u_fifo\.u_r2w\.s1$': sync_gray      #     読みポインタ
+    'cdc_cases\.p1$': sync_pulse         # 14. トグル + エッジ検出
+    'cdc_cases\.ck_smp$': clk_as_data    # 15. クロックをデータに
+    'cdc_cases\.irq_q$': no_sync         # 16. 非同期の入力端子をそのまま
+    'u_btn\.s1$': sync                   #     非同期の入力端子を 2 段で
+    'u_v0\.s1$': sync                    # 17. ベクタの各ビットを別々に同期化
+    'u_v1\.s1$': sync
+    'cdc_cases\.b_both$': reconv         #     受け側で合わせる
+    'cdc_cases\.g_ff$': reconv           #     同じ信号を 2 か所で同期化して合わせる(u_ok と t1/t2)
+    'cdc_cases\.b_cap$': gated           # 19. 同期化した信号と AND してから使う
+    'u_inv\.s1$': sync                   # 20. 反転をはさんだ同期化
+    'u_two0\.s1$': sync                  # 21. そのままの受け渡しをさかのぼる
+    'cdc_cases\.o_new$': reconv          #     まとめの FF(別々に同期化した信号が集まる)
+  none:
+    - 'cdc_cases\.d_ff$'                 # 9. 分周クロック(同じ系)
+    - 'cdc_cases\.k_ok$'
+    - 'cdc_cases\.t2$'
+  rdc:                                   # [リセットの源, 受け側のドメイン, 分類, FF 数]
+    - [rst_n, clk_b, rst_sync, 2]        # 18. リセット同期化回路
+    - [r2, clk_b, rst_ok, 1]
+    - [r2, clk_a, rst_cross, 1]
+    - [r2, clk_b, rst_logic, 1]
+- name: 深い階層 9 段・構造体・構造体の配列・generate(cdc_deep.sv)
+  files: [cdc_deep.sv]
+  top: cdc_deep
+  depth: 9
+  expect:
+    'g_lane\[0\]\.u_rx(\.g_n\.u_n){6}\.g_leaf\.u_ok\.g_sync\.u_s\.s\[0\]$': sync
+    'g_lane\[0\]\.u_rx(\.g_n\.u_n){6}\.g_leaf\.u_ok\.q$': handshake
+    'g_lane\[0\]\.u_rx(\.g_n\.u_n){6}\.g_leaf\.u_bad\.q$': no_sync
+    'g_lane\[0\]\.u_rx(\.g_n\.u_n){6}\.g_leaf\.u_gate\.g_sync\.u_s\.s\[0\]$': sync      # ゲートしたクロック(同じドメイン)
+    'g_lane\[0\]\.u_rx(\.g_n\.u_n){6}\.g_leaf\.u_gate\.q$': handshake
+    'g_lane\[0\]\.u_rx(\.g_n\.u_n){3}\.g_n\.g_fifo\.fq$': fifo
+    'g_lane\[0\].*u_fifo\.wgray_r1$': sync_gray
+    'g_lane\[0\].*u_fifo\.rgray_w1$': sync_gray
+  none:
+    - 'g_lane\[1\]'                      # レーン 1 は全部同じクロック: 構造体の配列を添字で分けて追えているか
+    - 'u_same'                           # ch[1](clk_b)を clk_b で受ける: 配列の要素・メンバを分けて追えているか

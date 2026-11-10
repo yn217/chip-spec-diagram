@@ -1,0 +1,77 @@
+title: 'CDC 詳細図: g_lane[0].u_rx.g_n.…_fifo.u_fifo.storage → g_lane[0].u_rx.g_n.…_n.u_n.g_n.g_fifo.fq'
+note: '非同期 FIFO のデータ(両向きのポインタ同期あり)。受け側: g_lane[0].u_rx.g_n.u_n.g_n.u_n.g_n.u_n.g_n.g_fifo.fq。送り側 clk_a → 受け側 clk_b'
+ports:
+- id: clk_a
+  dir: in
+- id: clk_b
+  dir: in
+- id: s0_d
+  dir: in
+- id: to_logic
+  dir: out
+- id: req_d
+  dir: in
+cells:
+- id: u_src0
+  type: dff
+  d: s0_d
+  ck: clk_a
+  q: s0_q
+  label: u_fifo.storage
+- id: u_req
+  type: dff
+  d: req_d
+  ck: clk_a
+  q: req
+  label: u_fifo.wgray
+- id: u_rsync1
+  type: dff
+  d: req
+  ck: clk_b
+  q: rsync1
+  label: u_fifo.wgray_r1
+- id: u_rsync2
+  type: dff
+  d: rsync1
+  ck: clk_b
+  q: req_s
+  label: u_fifo.wgray_r2
+- id: u_cond
+  type: block
+  label: 空でない(ポインタの比較)
+  in:
+  - req_s
+  out: en
+- id: u_cap
+  type: block
+  label: en の時だけ取り込む
+  in:
+  - s0_q
+  - en
+  out: d_sel
+- id: u_dst
+  type: dff
+  d: d_sel
+  ck: clk_b
+  q: to_logic
+  label: g_fifo.fq
+  cdc_ok: 同期化した制御が立っている間だけ取り込む(送り側はその間データを変えない)
+groups:
+- label: 送り側ドメイン clk_a
+  cells:
+  - u_src0
+  - u_req
+  color: '#2563eb'
+- label: 受け側ドメイン clk_b
+  cells:
+  - u_rsync1
+  - u_rsync2
+  - u_cond
+  - u_cap
+  - u_dst
+  color: '#7c3aed'
+nets:
+  s0_q: 8
+  s0_d: 8
+  to_logic: 8
+  d_sel: 8
