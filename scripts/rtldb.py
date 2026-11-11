@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """rtldb — RTL の接続をデータベース(SQLite)にし、クロックドメインと非同期の乗り換え(CDC・RDC)を検出する
   python3 rtldb.py build   -o design.db --top TOP [-I incdir] [-D NAME=VAL] [-f files.f] a.v b.sv ...
-  python3 rtldb.py analyze design.db [-o out/] [--static 正規表現] [--async-in 正規表現]   # → cdc.md / cdc_map.svg / cdc_hier.svg
+  python3 rtldb.py analyze design.db [-o out/] [--static 正規表現] [--async-in 正規表現]   # → cdc.md / cdc_map.svg / cdc_matrix.svg / cdc_hier.svg
   python3 rtldb.py path    design.db --src 正規表現 --dst 正規表現   # 送り側から受け側まで、階層をまたぐ信号の並び
   python3 rtldb.py iface   design.db --inst top.u_x -o iface.yaml   # ブロック間の接続図(ifdiag.py)用の YAML
   python3 rtldb.py selftest                                         # 答えのわかる RTL(examples/rtl/cdc_expected.yaml)で確かめる
@@ -1694,8 +1694,11 @@ def main():
         agg, cn = report(db, g.out)
         p = cdc_map(db, g.out, agg, cn, g.png)
         import cdcdiag
-        cdcdiag.hier(db, g.out, png=g.png)
-        print(f"解析 {time.time() - t0:.1f}s → {g.out}/cdc.md, {os.path.basename(p)}, cdc_hier.svg")
+        bad = {"none", "wrong"}                           # 図は両方の形で出す。まず対策なし・誤りだけ、表は全部の重さも
+        cdcdiag.hier(db, g.out, png=g.png, name="cdc_matrix", sevs=bad, style="matrix")
+        cdcdiag.hier(db, g.out, png=g.png, name="cdc_matrix_all", style="matrix")
+        cdcdiag.hier(db, g.out, png=g.png, name="cdc_hier", sevs=bad, style="lines")
+        print(f"解析 {time.time() - t0:.1f}s → {g.out}/cdc.md, {os.path.basename(p)}, cdc_matrix.svg, cdc_matrix_all.svg, cdc_hier.svg")
         for i, name, kind, nff in db.execute("SELECT id,name,kind,n_ff FROM clock ORDER BY n_ff DESC LIMIT 12"):
             print(f"  ドメイン {short(name)}: {kind}, FF {nff}")
         for cls, n in db.execute("SELECT class, count(DISTINCT dst) FROM cdc GROUP BY 1 ORDER BY 2 DESC"):

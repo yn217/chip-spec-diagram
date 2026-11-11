@@ -109,6 +109,8 @@ def hier(db, out, focus=None, max_rows=36, max_arcs=28, png=False, name="cdc_hie
         if a is None and b is None:
             continue
         X.append((si if a else -1, di if b else -1, sc, dc, cls, dst, sp, dp, a is None, b is None))
+    if sevs and not any(sev_of(x[4]) in sevs for x in X):
+        sevs = None                                       # その重さの乗り換えがない: 全部の重さで描く
     XR = [x for x in X if sev_of(x[4]) in sevs] if sevs else X      # 行を作る元: 描く重さの乗り換えだけ(--sev で絞った時は行も減る)
     OUT = -1                                              # 絞った階層の外にある端: 一番下の「この階層の外」の行へ
     I[OUT] = dict(id=OUT, path="", name="(この階層の外)", module="", parent=None, depth=I[root]["depth"])
@@ -1008,7 +1010,8 @@ def main():
     h.add_argument("--gap", type=int, default=14, help="同じ行に出入りする線どうしの間隔(px)。既定 14")
     h.add_argument("--lane", type=int, default=34, help="縦の幹線どうしの間隔(px)。既定 34")
     h.add_argument("--mono", action="store_true", help="隣り合う線の色を変えない(重さごとに 1 色)")
-    h.add_argument("--style", choices=["lines", "matrix"], default="lines", help="lines = 線でつなぐ / matrix = 線を描かず、送り側 × 受け側の表にする")
+    h.add_argument("--style", choices=["both", "lines", "matrix"], default="both",
+                   help="lines = CDC 階層図(線でつなぐ)/ matrix = CDC 階層表(線を描かず、送り側 × 受け側の表)/ both = 両方(既定)")
     h.add_argument("--no-merge", action="store_true", help="つながり方が同じ行をまとめない")
     h.add_argument("--sev", help="線にする重さ(none,wrong,review,ok,info をカンマ区切り。bad = none,wrong)。既定は全部(重い順に --arcs 本まで)")
     d = sub.add_parser("detail")
@@ -1016,9 +1019,12 @@ def main():
     g = ap.parse_args()
     db = sqlite3.connect(g.db)
     if g.cmd == "hier":
-        p, st = hier(db, g.out, g.focus, g.rows, g.arcs, g.png, g.name, set(g.sev.replace("bad", "none,wrong").split(",")) if g.sev else None,
-                     g.gap, g.lane, not g.mono, not g.no_merge, g.style)
-        print(f"生成: {p}(行 {st['rows']} / 線 {st['arcs']}" + (f" + 省略 {st['rest']}" if st["rest"] else "") + f" / 階層の深さ {st['depth']})")
+        sv = set(g.sev.replace("bad", "none,wrong").split(",")) if g.sev else None
+        for style in (["lines", "matrix"] if g.style == "both" else [g.style]):
+            name = g.name if style == "lines" else (g.name.replace("hier", "matrix") if "hier" in g.name else g.name + "_matrix")
+            p, st = hier(db, g.out, g.focus, g.rows, g.arcs, g.png, name, sv, g.gap, g.lane, not g.mono, not g.no_merge, style)
+            print(f"生成: {p}(行 {st['rows']} / 乗り換えの組 {st['arcs']}" + (f" + 省略 {st['rest']}" if st["rest"] else "")
+                  + f" / 階層の深さ {st['depth']})")
     else:
         import yaml
         y = detail(db, g.dst)

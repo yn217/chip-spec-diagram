@@ -19,7 +19,7 @@
 | リセット系統図 | `diagrams/reset-tree/GUIDE.md` |
 | ゲートレベル図 | `diagrams/gate-level/GUIDE.md` |
 | データフロー検討図 | `diagrams/dataflow-floorplan/GUIDE.md` |
-| CDC 階層図・CDC 詳細図(非同期箇所) | `diagrams/cdc/GUIDE.md` |
+| CDC 階層表・CDC 階層図・CDC 詳細図(非同期箇所) | `diagrams/cdc/GUIDE.md` |
 | フロアプラン・ボード配置 | `diagrams/bus-architecture/GUIDE.md`(G4) |
 
 ### バス構成図(製品規模)
@@ -154,9 +154,15 @@ ICG とイネーブル付きレジスタ。クロック・リセットの配線�
 
 <img src="docs/gallery/dataflow_fp_npu_soc.png" alt="データフロー検討図" width="820">
 
-### CDC 階層図(非同期箇所)
-RTL から作ったデータベースを元に、階層(行)× クロックドメイン(列)の上へクロックの乗り換えを線で描く。
-目的は非同期対策を忘れている所を見つけること。赤の太い実線 = 対策なし、赤の一点鎖線 = 対策の誤り、橙の破線 = 要確認、緑の細線 = 対策あり。番号は右の一覧と対応する。グレイコードは名前ではなく記述で確かめる。下は階層 9 段の確認用 RTL(`examples/rtl/cdc_deep.sv`)。
+### CDC 階層表・CDC 階層図(非同期箇所)
+RTL から作ったデータベースを元に、クロックの乗り換えを階層の上に示す。目的は非同期対策を忘れている所を見つけること。
+同じ内容を 2 つの形で両方出す。下は階層 9 段の確認用 RTL(`examples/rtl/cdc_deep.sv`)。
+
+**CDC 階層表**(線を描かない。行 = 送り側の階層、列 = 受け側の階層。赤いマスが対策忘れ・誤りの候補)
+
+<img src="docs/gallery/cdc_matrix_deep.png" alt="CDC 階層表" width="820">
+
+**CDC 階層図**(線でつなぐ。赤の太い実線 = 対策なし、赤の一点鎖線 = 対策の誤り、橙の破線 = 要確認、緑の細線 = 対策あり)
 
 <img src="docs/gallery/cdc_hier_deep.png" alt="CDC 階層図" width="820">
 
@@ -194,7 +200,7 @@ RTL から作ったデータベースを元に、階層(行)× クロックド�
 | `dataflowfp.py` | データフロー検討図(フロアプラン風の配置に、辺の端子 → PHY → バス → 行き先の流れ、距離・帯域の表) |
 | `gallery.py` | サンプルから全種類の図を今の描き方で描き直す(`docs/gallery/regen/` に出す。README の図の差し替え用) |
 | `rtldb.py` | RTL の接続を SQLite のデータベースにする(slang でエラボレート)。クロックドメイン・非同期の乗り換え(CDC 15 分類。対策忘れの検出が主目的)・リセットの乗り換え(RDC)の検出、経路の表示(`path`)、答え付きの自己確認(`selftest`)、接続図用 YAML の出力。OpenTitan top_earlgrey(51.5 万行・階層 11 段)で確認。方式は `reference/rtldb.md` |
-| `cdcdiag.py` | CDC 階層図(階層 × クロックドメインに乗り換えの線)と CDC 詳細図(乗り換え 1 本の回路 → `gatediag.py`) |
+| `cdcdiag.py` | CDC 階層表(送り側 × 受け側の表。線を描かない)、CDC 階層図(階層 × クロックドメインに乗り換えの線)、CDC 詳細図(乗り換え 1 本の回路 → `gatediag.py`) |
 | `storyboard.py` | 動作説明のストーリーボード(構成図を使い回し、ステップごとのコマを 1 枚に並べる) |
 | `ifdiag.py` | ブロック間の接続図(YAML または RTL から。AXI/APB の束ね、lint、SVG/PNG/draw.io) |
 | `memmap.py` `reach.py` `addrmap.py` | メモリマップの図と表、マスタごとの到達性・ループの検査 |

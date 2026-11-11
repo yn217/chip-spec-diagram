@@ -5,11 +5,11 @@ RTL の接続を SQLite のデータベースにし、図(ブロック間の接�
 ```
 python3 scripts/rtldb.py build -o design.db --top TOP -I incdir a.v b.sv ...   # RTL → DB(-f ファイル一覧 も可)
 python3 scripts/rtldb.py analyze design.db -o out/ --png [--static '正規表現'] [--async-in '正規表現'] [--gray '正規表現']
-                                                    # クロック・CDC・RDC → cdc.md, cdc_map.svg, cdc_hier.svg
+                                                    # クロック・CDC・RDC → cdc.md, cdc_map.svg, cdc_matrix.svg(表), cdc_hier.svg(線)
 python3 scripts/rtldb.py path design.db --src 正規表現 --dst 正規表現           # 送り側から受け側までの経路(階層をまたぐ信号の並び)
 python3 scripts/rtldb.py iface design.db --inst top.u_x -o iface.yaml          # → ifdiag.py render iface.yaml
 python3 scripts/rtldb.py selftest                                              # 答えのわかる RTL で分類を確かめる
-python3 scripts/cdcdiag.py hier design.db -o out/ --png [--focus 階層] [--rows 36] [--arcs 28] [--sev bad,review]   # CDC 階層図
+python3 scripts/cdcdiag.py hier design.db -o out/ --png [--focus 階層] [--sev bad] [--style both|lines|matrix]   # CDC 階層表と CDC 階層図
 python3 scripts/cdcdiag.py detail design.db --dst 正規表現 -o out/x.yaml        # CDC 詳細図 → gatediag.py render
 ```
 図の決まりは `diagrams/cdc/GUIDE.md`(R54)。
