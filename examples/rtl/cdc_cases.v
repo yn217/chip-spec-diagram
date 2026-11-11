@@ -167,5 +167,17 @@ module cdc_cases (
   wire [1:0] w_two2 = w_two;
   wire b_two0;
   sync2 u_two0 (.clk(clk_b), .rst_n(rst_n), .d(w_two2[0]), .q(b_two0));
-  always @(posedge clk_b) o_new <= k_ok ^ k_l ^ b_cap ^ {7'h0, b_pulse ^ irq_q ^ ck_smp ^ b_both ^ b_inv ^ b_two0};
+  // 22. 名前に gray がなくても、記述が X ^ (X >> 1) ならグレイコード            → 同期化あり(グレイコード)
+  reg [7:0] a_cnt, a_enc;
+  wire [7:0] a_cnt_n = a_cnt + 8'd1;
+  always @(posedge clk_a) begin a_cnt <= a_cnt_n; if (din[0]) a_enc <= a_cnt_n ^ (a_cnt_n >> 1); end
+  wire [7:0] b_enc;
+  sync2 #(8) u_enc (.clk(clk_b), .rst_n(rst_n), .d(a_enc), .q(b_enc));
+
+  // 23. 名前は gray でも、記述がグレイコードでない(ただのカウンタ)             → 対策の誤り(グレイコードでない多ビット)
+  reg [7:0] a_fake_gray;
+  always @(posedge clk_a) a_fake_gray <= a_fake_gray + 8'd1;
+  wire [7:0] b_fake_gray;
+  sync2 #(8) u_fake_gray (.clk(clk_b), .rst_n(rst_n), .d(a_fake_gray), .q(b_fake_gray));
+  always @(posedge clk_b) o_new <= k_ok ^ k_l ^ b_cap ^ b_enc ^ b_fake_gray ^ {7'h0, b_pulse ^ irq_q ^ ck_smp ^ b_both ^ b_inv ^ b_two0};
 endmodule

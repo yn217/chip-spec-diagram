@@ -1,6 +1,6 @@
 # rtldb.py selftest の答え。受け側の FF(階層パスの正規表現)→ 分類。
 # ここにない乗り換えが出たら失敗、none の所に出ても失敗(見逃しと誤検出の両方を確かめる)。
-- name: 分類 21 種(cdc_cases.v)
+- name: 分類 23 種(cdc_cases.v)
   files: [cdc_cases.v]
   top: cdc_cases
   async_in: ['ext_']                     # 非同期の入力端子
@@ -31,6 +31,8 @@
     'u_inv\.s1$': sync                   # 20. 反転をはさんだ同期化
     'u_two0\.s1$': sync                  # 21. そのままの受け渡しをさかのぼる
     'cdc_cases\.o_new$': reconv          #     まとめの FF(別々に同期化した信号が集まる)
+    'u_enc\.s1$': sync_gray              # 22. 名前に gray がなくても、記述がグレイコード
+    'u_fake_gray\.s1$': sync_bus         # 23. 名前は gray でも、記述がグレイコードでない
   none:
     - 'cdc_cases\.d_ff$'                 # 9. 分周クロック(同じ系)
     - 'cdc_cases\.k_ok$'

@@ -38,6 +38,22 @@ from chipdiag import esc, wlen, INK, to_png
 import yaml
 
 GRAY = "#64748b"
+BLOCK_LINE = 12                 # 箱(block)の名前の 1 行の幅(半角換算。全角 6 字)。超えたら折り返す
+
+
+def wrap_label(txt, n=BLOCK_LINE, max_lines=3):
+    """箱の名前を折り返す。"\\n" か改行で明示もできる。FF の段の間隔を箱の幅で広げないため"""
+    out = []
+    for part in str(txt).replace("\\n", "\n").split("\n"):
+        cur = ""
+        for ch in part:
+            if wlen(cur + ch) > n and cur:
+                out.append(cur); cur = ""
+            cur += ch
+        out.append(cur)
+    if len(out) > max_lines:                              # 長すぎる名前: 3 行に収まる幅まで 1 行を広げる
+        return wrap_label(txt, n + 2, max_lines)
+    return [t for t in out if t] or [""]
 CLK_PAL = ["#2563eb", "#9333ea", "#0891b2", "#db2777", "#16a34a", "#ca8a04"]
 RST_C = "#92400e"
 OR_C = 3 ** .5 / 2          # IEEE Std 91 / MIL-STD-806: OR の前の 2 つの円弧(半径 = 高さ)の頂点までの奥行き = √3/2 × 高さ
@@ -371,9 +387,9 @@ class Gate:
         elif k == "block":
             ni = len([p for p in n["pins"] if p.startswith("i")])
             no = len([p for p in n["pins"] if p.startswith("y")])
-            txt = n["cell"].get("text", n["label"])
-            h = max(40, max(ni, no) * 18 + 10)
-            w = max(54, wlen(txt) * 6.6 + 20)
+            lines = wrap_label(n["cell"].get("text", n["label"]))
+            h = max(40, max(ni, no) * 18 + 10, len(lines) * 15 + 14)
+            w = max(54, max(wlen(t) for t in lines) * 6.6 + 20)
             for i in range(ni):
                 P[f"i{i}"] = (0, h / 2 + (i - (ni - 1) / 2) * 18, "L")
             outs = [p for p in n["pins"] if p.startswith("y")]
@@ -948,9 +964,11 @@ class Gate:
             if k == "latch":
                 o.append(f'<text x="{f(x + w / 2)}" y="{f(y + 11)}" font-size="8.5" fill="{GRAY}" text-anchor="middle">LAT</text>')
         elif k == "block":
-            txt = n["cell"].get("text", n["label"])
-            o.append(f'<rect x="{f(x)}" y="{f(y)}" width="{f(w)}" height="{f(h)}" rx="8" {S}/>'
-                     f'<text x="{f(x + w / 2)}" y="{f(y + h / 2 + 4)}" font-size="11.5" font-weight="700" fill="{INK}" text-anchor="middle">{esc(txt)}</text>')
+            lines = wrap_label(n["cell"].get("text", n["label"]))
+            o.append(f'<rect x="{f(x)}" y="{f(y)}" width="{f(w)}" height="{f(h)}" rx="8" {S}/>')
+            for li, t in enumerate(lines):                # 箱の名前は折り返す(横に広げない)
+                o.append(f'<text x="{f(x + w / 2)}" y="{f(y + h / 2 + 4 + (li - (len(lines) - 1) / 2) * 15)}" font-size="11.5" '
+                         f'font-weight="700" fill="{INK}" text-anchor="middle">{esc(t)}</text>')
         elif k == "icg":
             o.append(f'<rect x="{f(x)}" y="{f(y)}" width="{w}" height="{h}" rx="3" {S}/>'
                      f'<text x="{f(x + w / 2 + 4)}" y="{f(y + h / 2 + 4)}" font-size="11" font-weight="800" fill="{INK}" text-anchor="middle">ICG</text>')

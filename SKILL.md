@@ -56,7 +56,7 @@ description: 半導体チップの仕様書に載せる図を作るハーネス�
 | クロック系統図(源→PLL→MUX→分周→ゲート→ドメイン、CDC と比率同期) | 使える | `diagrams/clock-tree/GUIDE.md` | `clocktree.py` |
 | データフロー検討図(フロアプラン風: 辺の端子 → PHY → バス → SRAM・演算器、距離・帯域) | 使える | `diagrams/dataflow-floorplan/GUIDE.md` | `dataflowfp.py` |
 | RTL の接続データベース(接続図の元・クロックドメインと CDC / RDC の検出・経路の表示・自己確認) | 使える | `reference/rtldb.md` | `rtldb.py` |
-| CDC 階層図・CDC 詳細図(非同期箇所: 階層 × クロックドメインに乗り換えの線、1 本ずつの回路) | 使える | `diagrams/cdc/GUIDE.md` | `cdcdiag.py` |
+| CDC 階層図・CDC 詳細図(非同期対策の忘れを見つける: 階層 × クロックドメインに乗り換えの線、1 本ずつの回路。GUIDE の「作業手順」をそのまま実行する) | 使える | `diagrams/cdc/GUIDE.md` | `cdcdiag.py` |
 | フロアプラン・ボード配置 | 使える | `diagrams/bus-architecture/GUIDE.md` の G4 | `floorplan.py` `board.py` |
 | リセット系統図(源→OR→同期化→ドメイン、解除シーケンス、RDC) | 使える | `diagrams/reset-tree/GUIDE.md` | `resettree.py` |
 | ゲートレベル図(記号の回路図、未接続・ループ・ゲーテッドクロック・CDC のチェック) | 使える | `diagrams/gate-level/GUIDE.md` | `gatediag.py` |

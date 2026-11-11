@@ -1,5 +1,5 @@
-title: 'CDC 詳細図: g_lane[0].u_rx.g_n.…_fifo.u_fifo.storage → g_lane[0].u_rx.g_n.…_n.u_n.g_n.g_fifo.fq'
-note: '非同期 FIFO のデータ(両向きのポインタ同期あり)。受け側: g_lane[0].u_rx.g_n.u_n.g_n.u_n.g_n.u_n.g_n.g_fifo.fq。送り側 clk_a → 受け側 clk_b'
+title: 'CDC 詳細図: u_fifo.storage → g_fifo.fq'
+note: '非同期 FIFO のデータ(両向きのポインタ同期あり)。書きポインタを 2 段で同期化し、読みポインタと比べて空でない時だけメモリを読む。受け側の FF: g_lane[0].u_rx.g_n.u_n.g_n.u_n.g_n.u_n.g_n.g_fifo.fq'
 ports:
 - id: clk_a
   dir: in
@@ -36,19 +36,15 @@ cells:
   ck: clk_b
   q: req_s
   label: u_fifo.wgray_r2
-- id: u_cond
-  type: block
-  label: 空でない(ポインタの比較)
-  in:
-  - req_s
-  out: en
 - id: u_cap
   type: block
-  label: en の時だけ取り込む
   in:
   - s0_q
-  - en
+  - req_s
   out: d_sel
+  label: '空でなければ
+
+    読み出す'
 - id: u_dst
   type: dff
   d: d_sel
@@ -66,7 +62,6 @@ groups:
   cells:
   - u_rsync1
   - u_rsync2
-  - u_cond
   - u_cap
   - u_dst
   color: '#7c3aed'

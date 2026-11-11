@@ -9,25 +9,42 @@ CDC 階層図(cdc_hier.svg)の決まり(R54):
   行 = 階層(乗り換えの端がある枝だけ。子が 1 つだけの中間は 1 行にまとめ、行数が多ければ深い所をたたむ)
   列 = クロックドメイン。マスの数字 = その行にある、そのドメインの FF 数(下の行に出していない下位を含む)
   線 = 乗り換え。送り側のマス(●)から右の通路に出て、受け側のマス(▶)に入る。同じ行どうし・同じドメインどうしはまとめて 1 本
-  線の種類 = 太い赤の実線: 要対策 / 橙の破線: 要確認 / 細い緑の実線: 同期化あり。番号は右の一覧と対応(一覧は 要対策 → 要確認 → 同期化あり の順)
+  線の種類 = 赤の太い実線: 対策なし / 赤の一点鎖線: 対策の誤り / 橙の破線: 要確認 / 緑の細い実線: 対策あり。番号は右の一覧と対応(重い順)
 """
 import os, sys, re, argparse, collections, sqlite3
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from chipdiag import esc, wlen, INK, to_png
-from rtldb import OK_CLASSES, INFO, REVIEW, BAD, CLASS_JA
+from rtldb import OK_CLASSES, INFO, REVIEW, BAD, NONE, WRONG, CLASS_JA
 
 GRAY = "#64748b"
-SEV = {"bad": ("#dc2626", "要対策"), "review": ("#d97706", "要確認"), "ok": ("#15803d", "同期化あり"), "info": ("#64748b", "準静的")}
+SEV = {"none": ("#dc2626", "対策なし"), "wrong": ("#b91c1c", "対策の誤り"), "review": ("#d97706", "要確認"), "ok": ("#15803d", "対策あり"),
+       "info": ("#64748b", "準静的")}
+ORDER = {"none": 0, "wrong": 1, "review": 2, "ok": 3, "info": 4}
+STROKE = {"none": 'stroke-width="2.4"', "wrong": 'stroke-width="2" stroke-dasharray="12 3 2 3"',
+          "review": 'stroke-width="1.8" stroke-dasharray="7 3"', "ok": 'stroke-width="1.2"', "info": 'stroke-width="1.2" stroke-dasharray="2 3"'}
 DOMC = [("#2563eb", "#dbeafe"), ("#7c3aed", "#ede9fe"), ("#0891b2", "#cffafe"), ("#be185d", "#fce7f3"), ("#475569", "#e2e8f0"),
         ("#92400e", "#fef3c7"), ("#4338ca", "#e0e7ff"), ("#0f766e", "#ccfbf1"), ("#a21caf", "#fae8ff"), ("#1e293b", "#f1f5f9")]
-CLASS_S = {"sync": "同期化あり", "sync_gray": "グレイコード", "sync_pulse": "エッジ検出", "fifo": "非同期FIFO", "handshake": "ハンドシェイク",
+CLASS_S = {"sync": "2段以上", "sync_gray": "グレイコード", "sync_pulse": "エッジ検出", "fifo": "非同期FIFO", "handshake": "ハンドシェイク",
            "gated": "ゲートの形", "sync_bus": "多ビット同期", "data_enable": "条件で取り込み", "mem": "メモリ", "reconv": "再収束",
            "clk_as_data": "クロックをデータに", "static": "準静的", "sync_logic": "同期化の前に論理", "sync_tap": "1段目を使用",
            "no_sync": "同期化なし"}
 
 
+LEG_ITEMS = {"none": "対策なし(同期化が見つからない・条件やポインタが同期化されていない)",
+             "wrong": "対策の誤り(グレイコードでない多ビット・同期化の前に論理・1 段目を使用)",
+             "review": "要確認(ゲートの形・再収束・クロックをデータに)",
+             "ok": "対策あり(2 段以上・グレイコード・エッジ検出・非同期 FIFO・ハンドシェイク)"}
+LEG_TEXT = ["読み方: ●(送り側のマス)から右の通路へ出て、▶(受け側のマス)に入る。",
+            "マス = その行(と、下の行に出していない下位)にある、その列のドメインの FF 数。太枠のマスが乗り換えの端。",
+            "行は乗り換えの端がある枝だけ。", "子が 1 つだけの中間の階層は 1 行にまとめ(…(n 階層)…)、同じモジュールの兄弟 4 つ以上は 1 行(×n)、",
+            "行が多い時は深い所をたたむ(▸ 下位 n 段を含む)。", "線の多い行は高くする。",
+            "同じ行どうしの乗り換えは重さごとに 1 本にまとめ、送り側か受け側が同じ線は 1 本の幹線に束ねる(分岐・合流の点に丸)。",
+            "1 本ずつの回路は CDC 詳細図(cdcdiag.py detail)、全件は cdc.md。", "グレイコードは記述(X ^ (X >> 1))で確かめ、名前は見ない。",
+            "判定は構造だけを見たもの(準静的・タイミングは人が確認する)。"]
+
+
 def sev_of(cls):
-    return "bad" if cls in BAD else "review" if cls in REVIEW else "ok" if cls in OK_CLASSES else "info"
+    return "none" if cls in NONE else "wrong" if cls in WRONG else "review" if cls in REVIEW else "ok" if cls in OK_CLASSES else "info"
 
 
 def cut(s, n):
@@ -92,10 +109,10 @@ def hier(db, out, focus=None, max_rows=36, max_arcs=28, png=False, name="cdc_hie
             if i != OUT:
                 need |= set(anc(i))
     ends = {x[0] for x in X} | {x[1] for x in X}
-    # 行数が多ければ、たたむ。重い乗り換え(要対策 → 要確認 → 件数)のある枝から順に開く
+    # 行数が多ければ、たたむ。重い乗り換え(対策なし・誤り → 要確認 → 件数)のある枝から順に開く
     wt = collections.defaultdict(lambda: [0, 0, 0])
     for x in X:
-        k = {"bad": 0, "review": 1}.get(sev_of(x[4]), 2)
+        k = {"none": 0, "wrong": 0, "review": 1}.get(sev_of(x[4]), 2)
         for i in set(anc(x[0]) if x[0] != OUT else []) | set(anc(x[1]) if x[1] != OUT else []):
             wt[i][k] += 1
     kids = collections.defaultdict(list)
@@ -106,7 +123,7 @@ def hier(db, out, focus=None, max_rows=36, max_arcs=28, png=False, name="cdc_hie
     shown = {root}
     heap = [(I[k]["depth"], tuple(-v for v in wt[k]), I[k]["path"], k) for k in kids[root]]
     heapq.heapify(heap)
-    while heap:                # 浅い階層から、同じ深さでは重い枝(要対策 → 要確認 → 件数)から行にする。入りきらない枝は親の行にたたむ
+    while heap:                # 浅い階層から、同じ深さでは重い枝(対策なし・誤り → 要確認 → 件数)から行にする。入りきらない枝は親の行にたたむ
         _, _, _, i = heapq.heappop(heap)
         if len(reduced_rows(I, need, ends, root, shown | {i})) > max_rows:
             break
@@ -149,22 +166,24 @@ def hier(db, out, focus=None, max_rows=36, max_arcs=28, png=False, name="cdc_hie
     for inst, dm, n in db.execute("SELECT s.inst, f.domain, count(*) FROM ff f JOIN signal s ON s.id=f.sig GROUP BY 1,2"):
         if dm in col and under(inst):
             cell[(row_of(inst), dm)] += n
-    # 乗り換えをまとめる: (送り側の行, 受け側の行, 送り側ドメイン, 受け側ドメイン)
-    G = collections.defaultdict(lambda: dict(cls=collections.Counter(), dst=collections.defaultdict(set), ex={}))
+    # 乗り換えをまとめる: (送り側の行, 受け側の行, 重さ)で 1 本。ドメインの組は、端のマスと一覧で示す
+    G = collections.defaultdict(lambda: dict(dst=collections.defaultdict(set), ex={}, pairs=collections.defaultdict(set)))
     for si, di, sc, dc, cls, dst, sp, dp, so, do in X:
         if sc not in col or dc not in col:
             continue
-        g = G[(row_of(si), row_of(di), sc, dc)]
+        g = G[(row_of(si), row_of(di))]
         g["dst"][cls].add(dst)
         g["ex"].setdefault(cls, (sp, dp))
+        g["pairs"][sev_of(cls)].add((sc, dc))
     arcs = []
-    order = {"bad": 0, "review": 1, "ok": 2, "info": 3}
-    for (rs, rd, sc, dc), g in G.items():                 # 重さ(要対策・要確認・同期化あり)ごとに 1 本
+    order = ORDER
+    for (rs, rd), g in G.items():
         for sv in order:
             cnt = {c: len(v) for c, v in g["dst"].items() if sev_of(c) == sv}
             if cnt:
                 worst = max(cnt, key=lambda c: cnt[c])
-                arcs.append(dict(rs=rs, rd=rd, sc=sc, dc=dc, cnt=cnt, sev=sv, n=sum(cnt.values()), ex=g["ex"][worst], worst=worst))
+                arcs.append(dict(rs=rs, rd=rd, pairs=sorted(g["pairs"][sv], key=lambda t: (col[t[0]], col[t[1]])), cnt=cnt, sev=sv,
+                                 n=len(set().union(*[v for c, v in g["dst"].items() if sev_of(c) == sv])), ex=g["ex"][worst], worst=worst))
     if sevs:
         arcs = [a for a in arcs if a["sev"] in sevs]      # 線にする重さを絞る(行と数字はそのまま)
     arcs.sort(key=lambda a: (order[a["sev"]], -a["n"]))
@@ -203,26 +222,71 @@ def hier(db, out, focus=None, max_rows=36, max_arcs=28, png=False, name="cdc_hie
     CW = 96
     XC = X0 + NW                                          # ドメインの列の左端
     XA = XC + len(doms) * CW + 14                         # 通路の左端
-    ry = lambda r: Y0 + r * RH + RH / 2
-    # 通路(レーン)の割り当て: 短い線から内側へ
+    RY, YT, RHr = {}, {}, {}                              # 行ごとの中心・上端・高さ(線の多い行は高くする。幹線を決めた後で埋める)
+    ry = lambda r: RY[r]
+    # 幹線にまとめる: 重さごとに、線の多い行(送り側なら分岐、受け側なら合流)から順に、その行の線を 1 本の幹線に束ねる
+    trunks = []                                           # dict(kind "s"=分岐 / "d"=合流, row, sev, mem=[線])
+    for sv in order:
+        left = [a for a in arcs if a["sev"] == sv and a["rs"] != a["rd"]]
+        while left:
+            cntk = collections.Counter()
+            for a in left:
+                cntk[("d", a["rd"])] += 1
+                cntk[("s", a["rs"])] += 1
+            (kind, row), _ = max(cntk.items(), key=lambda kv: (kv[1], kv[0][0] == "d", -kv[0][1]))
+            mem = [a for a in left if (a["rd"] if kind == "d" else a["rs"]) == row]
+            trunks.append(dict(kind=kind, row=row, sev=sv, mem=mem))
+            left = [a for a in left if a not in mem]
+    # 通路(レーン)の割り当て: 短い幹線から内側へ
     lanes = []
-    for a in sorted(arcs, key=lambda a: (abs(a["rs"] - a["rd"]), a["no"])):
-        if a["rs"] == a["rd"]:
-            a["lane"] = None                              # 同じ行の中: マスからマスへまっすぐ
-            continue
-        lo, hi = sorted((a["rs"], a["rd"]))
+    for t in trunks:
+        rows_ = [t["row"]] + [(a["rs"] if t["kind"] == "d" else a["rd"]) for a in t["mem"]]
+        t["lo"], t["hi"] = min(rows_), max(rows_)
+    for t in sorted(trunks, key=lambda t: (t["hi"] - t["lo"], min(a["no"] for a in t["mem"]))):
         for k, used in enumerate(lanes):
-            if all(hi < u0 or lo > u1 for u0, u1 in used):
-                used.append((lo, hi)); a["lane"] = k
+            if all(t["hi"] < u0 or t["lo"] > u1 for u0, u1 in used):
+                used.append((t["lo"], t["hi"])); t["lane"] = k
                 break
         else:
-            lanes.append([(lo, hi)]); a["lane"] = len(lanes) - 1
-    LW = 19
+            lanes.append([(t["lo"], t["hi"])]); t["lane"] = len(lanes) - 1
+    # 行の高さ: 出入りする線(幹線の根元 + 枝)が多い行だけ高くし、線を STEP 刻みで離す
+    STEP = 7.0
+    nst = collections.Counter()
+    for t in trunks:
+        nst[t["row"]] += 1
+        for a in t["mem"]:
+            nst[a["rs"] if t["kind"] == "d" else a["rd"]] += 1
+    selfn = collections.defaultdict(lambda: [0, 0])       # 同じ行の中の線: 右向き・左向きの本数
+    for a in arcs:
+        if a["rs"] == a["rd"]:
+            for sc, dc in a["pairs"]:
+                selfn[a["rs"]][0 if col[dc] > col[sc] else 1] += 1
+    yy = Y0
+    for n in range(len(R)):
+        RHr[n] = max(RH, nst[n] * STEP + 14, 2 * (4.5 + 6 * (max(selfn[n]) - 1)) + 16 if n in selfn else 0)
+        YT[n], RY[n] = yy, yy + RHr[n] / 2
+        yy += RHr[n]
+    YB = yy                                               # 行の下端
+    LW = 22
     XL = XA + max(len(lanes), 1) * LW + 34                # 一覧の左端
     LISTW = 700
     W = max(XL + LISTW + 20, 1500)
     EH = 46
-    H = max(Y0 + len(R) * RH, Y0 + (len(arcs) + (1 if rest else 0)) * EH) + 150
+    # 凡例の高さ: 線の種類と読み方の文を、図の幅で折り返して数える
+    lx_, nrow = X0, 1
+    for txt in LEG_ITEMS.values():
+        wd = 70 + wlen(txt) * 5.9
+        if lx_ > X0 and lx_ + wd > W - 20:
+            lx_, nrow = X0, nrow + 1
+        lx_ += wd
+    leg_lines, cur = [], ""
+    for sen in LEG_TEXT:
+        if cur and (wlen(cur + sen)) * 5.6 > W - 2 * X0:
+            leg_lines.append(cur); cur = ""
+        cur += sen
+    leg_lines.append(cur)
+    LEGH = nrow * 20 + len(leg_lines) * 18 + 44
+    H = max(YB, Y0 + (len(arcs) + (1 if rest else 0)) * EH) + 46 + LEGH
     o = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W:.0f} {H:.0f}" font-family="\'Noto Sans JP\',sans-serif">',
          '<rect width="100%" height="100%" fill="#fff"/>',
          f'<text x="{X0}" y="32" font-size="18" font-weight="800" fill="{INK}">CDC 階層図: {esc(I[root]["name"] if focus else top)}'
@@ -235,7 +299,7 @@ def hier(db, out, focus=None, max_rows=36, max_arcs=28, png=False, name="cdc_hie
             seen_d[x[5]] = sv
     for sv in seen_d.values():
         tot[sv] += 1
-    o.append(f'<text x="{X0}" y="54" font-size="12" fill="{GRAY}">乗り換え(受け側の FF 単位): 要対策 {tot["bad"]} / 要確認 {tot["review"]} / 同期化あり {tot["ok"]}'
+    o.append(f'<text x="{X0}" y="54" font-size="12" fill="{GRAY}">乗り換え(受け側の FF 単位): 対策なし {tot["none"]} / 対策の誤り {tot["wrong"]} / 要確認 {tot["review"]} / 対策あり {tot["ok"]}'
              f'・階層の深さ 最大 {max(I[i]["depth"] for i in need) - I[root]["depth"]} 段・行の数字は FF 数</text>')
     # 列の見出し
     o.append(f'<text x="{X0 + 4}" y="{Y0 - 14}" font-size="11.5" font-weight="700" fill="{GRAY}">階層(インスタンス)</text>')
@@ -253,10 +317,10 @@ def hier(db, out, focus=None, max_rows=36, max_arcs=28, png=False, name="cdc_hie
         else:
             o.append(f'<text x="{cx:.0f}" y="{Y0 - 46}" font-size="11.5" font-weight="700" fill="{INK}" text-anchor="middle">{esc(l1)}</text>')
         o.append(f'<text x="{cx:.0f}" y="{Y0 - 30}" font-size="9" fill="{GRAY}" text-anchor="middle">{esc(C[d]["kind"])}・FF {C[d]["nff"]}</text>')
-        o.append(f'<line x1="{cx:.0f}" y1="{Y0}" x2="{cx:.0f}" y2="{Y0 + len(R) * RH}" stroke="{bg}" stroke-width="{CW - 30}" opacity="0.35"/>')
+        o.append(f'<line x1="{cx:.0f}" y1="{Y0}" x2="{cx:.0f}" y2="{YB:.0f}" stroke="{bg}" stroke-width="{CW - 30}" opacity="0.35"/>')
     # 行
     for n, ((i, chain, lvl), lab) in enumerate(zip(R, labels)):
-        y = Y0 + n * RH
+        y, RH = YT[n], RHr[n]
         if n % 2 == 0:
             o.append(f'<rect x="{X0}" y="{y}" width="{XA - X0 - 8:.0f}" height="{RH}" fill="#f8fafc"/>')
         o.append(f'<line x1="{X0}" y1="{y + RH}" x2="{XA - 8:.0f}" y2="{y + RH}" stroke="#e2e8f0" stroke-width="0.8"/>')
@@ -265,49 +329,74 @@ def hier(db, out, focus=None, max_rows=36, max_arcs=28, png=False, name="cdc_hie
             o.append(f'<path d="M{x - 10},{y} V{y + RH / 2} H{x - 2}" fill="none" stroke="#94a3b8" stroke-width="1"/>')
         o.append(f'<text x="{x}" y="{y + RH / 2 + 4}" font-size="12" font-weight="{700 if lvl < 2 else 500}" fill="{INK}">{esc(lab)}</text>')
         o.append(f'<text x="{XC - 8}" y="{y + RH / 2 + 4}" font-size="9.5" fill="{GRAY}" text-anchor="end">{esc(mods[n])}</text>')
-    # 線の端の位置(同じマスに複数の線: 上下にずらす)
-    endk = collections.defaultdict(list)
+    # 線の端の位置: 行ごとに、幹線の根元(1 本)と枝(線 1 本ごと)を上下にずらす
     hot = set()
     for a in arcs:
-        hot |= {(a["rs"], a["sc"]), (a["rd"], a["dc"])}
-        if a["rs"] == a["rd"]:
-            continue
-        endk[(a["rs"], a["sc"])].append((a["rd"], a["no"], a, "s"))
-        endk[(a["rd"], a["dc"])].append((a["rs"], a["no"], a, "d"))
-    for (r, d), lst in endk.items():
-        lst.sort(key=lambda t: (t[0], t[1]))
-        step = min(5.0, 20.0 / max(len(lst), 1))
-        for k, (_, _, a, w) in enumerate(lst):
-            a["y" + w] = ry(r) + (k - (len(lst) - 1) / 2) * step
+        for sc, dc in a["pairs"]:
+            hot |= {(a["rs"], sc), (a["rd"], dc)}
+    stubs = collections.defaultdict(list)
+    for t in trunks:
+        stubs[t["row"]].append((t["lane"], 0, t, None))
+        for a in t["mem"]:
+            stubs[a["rs"] if t["kind"] == "d" else a["rd"]].append((t["lane"], a["no"], t, a))
+    for r, lst in stubs.items():
+        lst.sort(key=lambda x: (x[0], x[1]))
+        step = STEP
+        for k, (_, _, t, a) in enumerate(lst):
+            y = ry(r) + (k - (len(lst) - 1) / 2) * step
+            if a is None:
+                t["y"] = y
+            else:
+                a["ym"] = y
     PW = 52
     px = lambda d: XC + col[d] * CW + CW / 2 + PW / 2      # マスの右端
-    # 線(マスの下に敷く)
+    # 線(マスの下に敷く)。軽いものを先に、重いものを上に
+    selfk = collections.defaultdict(lambda: [0, 0])
     for a in sorted(arcs, key=lambda a: -order[a["sev"]]):
-        c = SEV[a["sev"]][0]
-        st = {"bad": 'stroke-width="2.6"', "review": 'stroke-width="1.8" stroke-dasharray="7 3"', "ok": 'stroke-width="1.2"',
-              "info": 'stroke-width="1.2" stroke-dasharray="2 3"'}[a["sev"]]
-        if a["lane"] is None:
-            right = col[a["dc"]] > col[a["sc"]]
-            y = ry(a["rs"]) + (-4.5 if right else 4.5)
-            xs = px(a["sc"]) + 2 if right else px(a["sc"]) - PW - 2
-            xd = px(a["dc"]) - PW - 8 if right else px(a["dc"]) + 8
+        if a["rs"] != a["rd"]:
+            continue
+        c, st = SEV[a["sev"]][0], STROKE[a["sev"]]         # 同じ行の中: マスからマスへまっすぐ(右向きは上、左向きは下に 6px 刻み)
+        for k, (sc, dc) in enumerate(a["pairs"]):
+            right = col[dc] > col[sc]
+            kk = selfk[a["rs"]][0 if right else 1]
+            selfk[a["rs"]][0 if right else 1] += 1
+            y = ry(a["rs"]) + (-4.5 - 6 * kk if right else 4.5 + 6 * kk)
+            xs = px(sc) + 2 if right else px(sc) - PW - 2
+            xd = px(dc) - PW - 8 if right else px(dc) + 8
             o.append(f'<path d="M{xs:.1f},{y:.1f} H{xd:.1f}" fill="none" stroke="{c}" {st}/>')
             o.append(f'<path d="M{xd + (7 if right else -7):.1f},{y:.1f} l{-8 if right else 8},-4.5 v9 z" fill="{c}"/>')
             o.append(f'<circle cx="{xs:.1f}" cy="{y:.1f}" r="3.2" fill="{c}" stroke="#fff" stroke-width="1"/>')
-            a["bx"], a["by"] = (xd - 12 if right else xd + 12), y + (-7 if right else 7)
-            continue
-        lx = XA + a["lane"] * LW + LW / 2
-        ys, yd = a["ys"], a["yd"]
-        if abs(ys - yd) < 3:
-            ys, yd = ys - 4, yd + 4
-        r = min(6, abs(yd - ys) / 2)
-        sg = 1 if yd > ys else -1
-        xs, xd = px(a["sc"]) + 2, px(a["dc"]) + 8
-        o.append(f'<path d="M{xs:.1f},{ys:.1f} H{lx - r:.1f} Q{lx:.1f},{ys:.1f} {lx:.1f},{ys + sg * r:.1f} V{yd - sg * r:.1f} '
-                 f'Q{lx:.1f},{yd:.1f} {lx - r:.1f},{yd:.1f} H{xd:.1f}" fill="none" stroke="{c}" {st} stroke-linejoin="round"/>')
-        o.append(f'<path d="M{xd - 7:.1f},{yd:.1f} l8,-4.5 v9 z" fill="{c}"/>')
-        o.append(f'<circle cx="{xs:.1f}" cy="{ys:.1f}" r="3.2" fill="{c}" stroke="#fff" stroke-width="1"/>')
-        a["bx"], a["by"] = lx, (ys + yd) / 2
+            if k == 0:                                    # 番号は線の上。同じ行の線どうしで重ならないよう横にずらす
+                a["bx"], a["by"] = (xd - 14 - 18 * kk if right else xd + 14 + 18 * kk), y
+    def src_end(scs, y, lx, c, st):                       # 送り側: 一番左のマスから幹線へ。関係するマスごとに ●
+        o.append(f'<path d="M{px(scs[0]) + 2:.1f},{y:.1f} H{lx:.1f}" fill="none" stroke="{c}" {st}/>')
+        for d in scs:
+            o.append(f'<circle cx="{px(d) + 2:.1f}" cy="{y:.1f}" r="3.2" fill="{c}" stroke="#fff" stroke-width="1"/>')
+
+    def dst_end(dcs, y, lx, c, st):                       # 受け側: 幹線から一番左のマスへ。関係するマスごとに ▶
+        o.append(f'<path d="M{lx:.1f},{y:.1f} H{px(dcs[0]) + 8:.1f}" fill="none" stroke="{c}" {st}/>')
+        for d in dcs:
+            o.append(f'<path d="M{px(d) + 1:.1f},{y:.1f} l8,-4.5 v9 z" fill="{c}"/>')
+    bycol = lambda ds: sorted(set(ds), key=lambda d: col[d])
+    for t in sorted(trunks, key=lambda t: -order[t["sev"]]):
+        c, st = SEV[t["sev"]][0], STROKE[t["sev"]]
+        lx = XA + t["lane"] * LW + LW / 2
+        ys_all = [t["y"]] + [a["ym"] for a in t["mem"]]
+        o.append(f'<path d="M{lx:.1f},{min(ys_all):.1f} V{max(ys_all):.1f}" fill="none" stroke="{c}" {st} stroke-linecap="round"/>')
+        if t["kind"] == "d":
+            dst_end(bycol(dc for a in t["mem"] for _, dc in a["pairs"]), t["y"], lx, c, st)
+        else:
+            src_end(bycol(sc for a in t["mem"] for sc, _ in a["pairs"]), t["y"], lx, c, st)
+        for a in t["mem"]:
+            if t["kind"] == "d":
+                src_end(bycol(sc for sc, _ in a["pairs"]), a["ym"], lx, c, st)
+            else:
+                dst_end(bycol(dc for _, dc in a["pairs"]), a["ym"], lx, c, st)
+            if len(t["mem"]) > 1:
+                o.append(f'<circle cx="{lx:.1f}" cy="{a["ym"]:.1f}" r="2.6" fill="{c}"/>')      # 分岐・合流の点
+            a["bx"], a["by"] = lx - 13, a["ym"]
+        if len(t["mem"]) == 1:                            # 1 本だけ: 番号は縦の線の上
+            t["mem"][0]["bx"], t["mem"][0]["by"] = lx, (t["y"] + t["mem"][0]["ym"]) / 2
     # マス
     for (r, d), n in cell.items():
         cx = XC + col[d] * CW + CW / 2
@@ -327,7 +416,10 @@ def hier(db, out, focus=None, max_rows=36, max_arcs=28, png=False, name="cdc_hie
 
     def badge(x, y, a, r=8.2):
         c = SEV[a["sev"]][0]
-        if a["sev"] == "bad":
+        if a["sev"] == "wrong":                           # 対策の誤り: 四角
+            return (f'<rect x="{x - r:.1f}" y="{y - r:.1f}" width="{2 * r}" height="{2 * r}" rx="2.5" fill="{c}" stroke="#fff" stroke-width="1.2"/>'
+                    f'<text x="{x:.1f}" y="{y + 3.6:.1f}" font-size="10" font-weight="800" fill="#fff" text-anchor="middle">{a["no"]}</text>')
+        if a["sev"] == "none":                            # 対策なし: 塗りの丸
             return (f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r}" fill="{c}" stroke="#fff" stroke-width="1.2"/>'
                     f'<text x="{x:.1f}" y="{y + 3.6:.1f}" font-size="10" font-weight="800" fill="#fff" text-anchor="middle">{a["no"]}</text>')
         return (f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r}" fill="#fff" stroke="{c}" stroke-width="{1.8 if a["sev"] == "review" else 1.1}"/>'
@@ -335,24 +427,28 @@ def hier(db, out, focus=None, max_rows=36, max_arcs=28, png=False, name="cdc_hie
     for a in arcs:
         o.append(badge(a["bx"], a["by"], a))
     # 一覧
-    o.append(f'<text x="{XL}" y="{Y0 - 14}" font-size="11.5" font-weight="700" fill="{GRAY}">乗り換えの一覧(番号は線と対応。要対策 → 要確認 → 同期化あり の順)</text>')
+    o.append(f'<text x="{XL}" y="{Y0 - 14}" font-size="11.5" font-weight="700" fill="{GRAY}">乗り換えの一覧(番号は線と対応。対策なし → 対策の誤り → 要確認 → 対策あり の順)</text>')
     for n, a in enumerate(arcs):
         y = Y0 + n * EH
         c = SEV[a["sev"]][0]
         o.append(f'<line x1="{XL}" y1="{y + EH - 3}" x2="{XL + LISTW}" y2="{y + EH - 3}" stroke="#e2e8f0" stroke-width="0.8"/>')
         o.append(badge(XL + 10, y + 13, a))
-        fs, bs = DOMC[col[a["sc"]] % len(DOMC)]
-        fd, bd = DOMC[col[a["dc"]] % len(DOMC)]
         x = XL + 26
-        s1, s2 = cut(full[a["rs"]], 34), cut(full[a["rd"]], 34)
-        o.append(f'<rect x="{x}" y="{y + 5}" width="16" height="16" rx="3" fill="{bs}" stroke="{fs}"/><text x="{x + 8}" y="{y + 17}" '
-                 f'font-size="10.5" font-weight="800" fill="{fs}" text-anchor="middle">{chr(65 + col[a["sc"]])}</text>')
-        o.append(f'<text x="{x + 21}" y="{y + 17}" font-size="11.5" font-weight="700" fill="{INK}">{esc(s1)}</text>')
-        x2 = x + 21 + wlen(s1) * 6.9 + 8
-        o.append(f'<text x="{x2:.0f}" y="{y + 17}" font-size="12" font-weight="800" fill="{c}">→</text>')
-        o.append(f'<rect x="{x2 + 18:.0f}" y="{y + 5}" width="16" height="16" rx="3" fill="{bd}" stroke="{fd}"/><text x="{x2 + 26:.0f}" y="{y + 17}" '
-                 f'font-size="10.5" font-weight="800" fill="{fd}" text-anchor="middle">{chr(65 + col[a["dc"]])}</text>')
-        o.append(f'<text x="{x2 + 39:.0f}" y="{y + 17}" font-size="11.5" font-weight="700" fill="{INK}">{esc(s2)}</text>')
+
+        def chips(x, ds):
+            for d in ds[:4]:
+                fg, bg = DOMC[col[d] % len(DOMC)]
+                o.append(f'<rect x="{x:.0f}" y="{y + 5}" width="16" height="16" rx="3" fill="{bg}" stroke="{fg}"/><text x="{x + 8:.0f}" '
+                         f'y="{y + 17}" font-size="10.5" font-weight="800" fill="{fg}" text-anchor="middle">{chr(65 + col[d])}</text>')
+                x += 18
+            return x + 3
+        s1, s2 = cut(full[a["rs"]], 32), cut(full[a["rd"]], 32)
+        x = chips(x, sorted({sc for sc, _ in a["pairs"]}, key=lambda d: col[d]))
+        o.append(f'<text x="{x:.0f}" y="{y + 17}" font-size="11.5" font-weight="700" fill="{INK}">{esc(s1)}</text>')
+        x += wlen(s1) * 6.9 + 8
+        o.append(f'<text x="{x:.0f}" y="{y + 17}" font-size="12" font-weight="800" fill="{c}">→</text>')
+        x = chips(x + 18, sorted({dc for _, dc in a["pairs"]}, key=lambda d: col[d]))
+        o.append(f'<text x="{x:.0f}" y="{y + 17}" font-size="11.5" font-weight="700" fill="{INK}">{esc(s2)}</text>')
         br = "・".join(f"{CLASS_S[k]} {v}" for k, v in sorted(a["cnt"].items(), key=lambda kv: (order[sev_of(kv[0])], -kv[1])))
         o.append(f'<text x="{XL + 26}" y="{y + 34}" font-size="10.5" fill="{c}" font-weight="700">{esc(SEV[a["sev"]][1])}: {esc(br if wlen(br) <= 46 else cut(br, 90)[:30] + "…")}'
                  f'<tspan fill="{GRAY}" font-weight="400" dx="8">例 {esc(cut(tail(a["ex"][0]), 26))} → {esc(cut(tail(a["ex"][1]), 26))}</tspan></text>')
@@ -361,24 +457,23 @@ def hier(db, out, focus=None, max_rows=36, max_arcs=28, png=False, name="cdc_hie
         rc = collections.Counter(a["sev"] for a in rest)
         o.append(f'<text x="{XL + 26}" y="{y + 20}" font-size="11" fill="{GRAY}">ほか {len(rest)} 組('
                  + " / ".join(f"{SEV[k][1]} {v}" for k, v in rc.items()) + ')は線を省略。cdc.md を参照、または --focus で階層を絞る</text>')
-    # 凡例
-    y = H - 104
+    # 凡例(幅に収まらなければ折り返す)
+    y = H - LEGH + 14
     o.append(f'<line x1="{X0}" y1="{y - 14}" x2="{W - 20}" y2="{y - 14}" stroke="#cbd5e1"/>')
     x = X0
-    for k, (st, txt) in {"bad": ('stroke-width="2.6"', "要対策(同期化なし・同期化の前に論理・1 段目を使用)"),
-                         "review": ('stroke-width="1.8" stroke-dasharray="7 3"', "要確認(多ビット同期・条件で取り込み・ゲートの形・再収束・メモリ)"),
-                         "ok": ('stroke-width="1.2"', "同期化あり(2 段以上・グレイコード・非同期 FIFO・ハンドシェイク)")}.items():
-        c = SEV[k][0]
+    for k, txt in LEG_ITEMS.items():
+        st, c = STROKE[k], SEV[k][0]
+        wd = 70 + wlen(txt) * 5.9
+        if x > X0 and x + wd > W - 20:
+            x, y = X0, y + 20
         o.append(f'<circle cx="{x + 4}" cy="{y}" r="3.2" fill="{c}"/><line x1="{x + 4}" y1="{y}" x2="{x + 44}" y2="{y}" stroke="{c}" {st}/>'
                  f'<path d="M{x + 40},{y} l8,-4.5 v9 z" fill="{c}" transform="rotate(180 {x + 44} {y})"/>'
-                 f'<text x="{x + 56}" y="{y + 4}" font-size="11" fill="{INK}">{esc(txt)}</text>')
-        x += 76 + wlen(txt) * 6.4
-    o.append(f'<text x="{X0}" y="{y + 26}" font-size="11" fill="{GRAY}">読み方: ●(送り側のマス)から右の通路へ出て、▶(受け側のマス)に入る。'
-             f'マス = その行(と、下の行に出していない下位)にある、その列のドメインの FF 数。太枠のマスが乗り換えの端。</text>')
-    o.append(f'<text x="{X0}" y="{y + 44}" font-size="11" fill="{GRAY}">行は乗り換えの端がある枝だけ。子が 1 つだけの中間の階層は 1 行にまとめ(…(n 階層)…)、'
-             f'同じモジュールの兄弟 4 つ以上は 1 行(×n)、行が多い時は深い所をたたむ(▸ 下位 n 段を含む)。同じ行・同じドメインどうしの乗り換えは、重さ(要対策・要確認・同期化あり)ごとに 1 本にまとめる。</text>')
-    o.append(f'<text x="{X0}" y="{y + 62}" font-size="11" fill="{GRAY}">1 本ずつの回路は CDC 詳細図(cdcdiag.py detail)、全件は cdc.md。'
-             f'判定は構造だけを見たもの(準静的・ハンドシェイクのタイミングは人が確認する)。</text>')
+                 f'<text x="{x + 56}" y="{y + 4}" font-size="10.5" fill="{INK}">{esc(txt)}</text>')
+        x += wd
+    y += 8
+    for ln in leg_lines:
+        y += 18
+        o.append(f'<text x="{X0}" y="{y}" font-size="11" fill="{GRAY}">{esc(ln)}</text>')
     o.append("</svg>")
     os.makedirs(out, exist_ok=True)
     p = os.path.join(out, name + ".svg")
@@ -501,13 +596,13 @@ def detail(db, dst_re):
         return ids
     if cls in ("sync", "sync_gray", "sync_bus", "sync_pulse", "sync_logic", "sync_tap"):
         if logic and cls == "sync_logic":
-            cells.append(dict(id="u_logic", type="block", label="組み合わせ論理", **{"in": sq}, out="n_logic"))
+            cells.append(dict(id="u_logic", type="block", label="組み合わせ\n論理", **{"in": sq}, out="n_logic"))
             din = "n_logic"; gs.append("u_logic")
         ok = {"sync_gray": "グレイコード(1 回に 1 ビットだけ変わる)", "sync_bus": None, "sync_logic": None, "sync_tap": None}.get(cls, None)
         ids = sync_chain(dst, din, "sync", "sync_q", ok, w)
         gd += ids
         if cls == "sync_tap" and len(ids) >= 1:
-            cells.append(dict(id="u_tap", type="block", label="ほかの論理", **{"in": ["sync1" if len(ids) > 1 else "sync_q"]}, out="tap_use"))
+            cells.append(dict(id="u_tap", type="block", label="ほかの\n論理", **{"in": ["sync1" if len(ids) > 1 else "sync_q"]}, out="tap_use"))
             ports.append(dict(id="tap_use", dir="out")); gd.append("u_tap")
         if cls == "sync_pulse":
             cells.append(dict(id="u_edge", type="xor", **{"in": ["sync_q", f"sync{max(len(ids) - 1, 1)}"]}, out=out, label="エッジ検出"))
@@ -520,7 +615,7 @@ def detail(db, dst_re):
     else:
         via = rows[0][7]
         if logic:
-            cells.append(dict(id="u_logic", type="block", label="組み合わせ論理" if cls != "fifo" else "読み出し(メモリ[rptr])", **{"in": sq}, out="n_data"))
+            cells.append(dict(id="u_logic", type="block", label="組み合わせ\n論理" if cls != "fifo" else "メモリの\n読み出し", **{"in": sq}, out="n_data"))
             din = "n_data"
             (gd if cls in ("fifo", "mem") else gs).append("u_logic")
             if w > 1:
@@ -539,9 +634,8 @@ def detail(db, dst_re):
                 cells.append(dict(id="u_req", type="dff", d="req_d", ck=sclk, q="req", label=cut(nm(vp[0]) if vp else "req", 22)))
                 gs.append("u_req")
                 ids = sync_chain(via, "req", "rsync", "req_s")
-                cells.append(dict(id="u_cond", type="block", label="空でない(ポインタの比較)" if cls == "fifo" else "条件の論理",
-                                  **{"in": ["req_s"]}, out=en))
-                gd += ids + ["u_cond"]
+                en = "req_s"
+                gd += ids
             else:
                 ports.append(dict(id=en, dir="in"))
             if cls == "gated":
@@ -552,7 +646,9 @@ def detail(db, dst_re):
                 if w > 1:
                     nets["gated"] = w
             else:
-                cells.append(dict(id="u_cap", type="block", label="en の時だけ取り込む", **{"in": [din, en]}, out="d_sel"))
+                # 条件の論理と取り込みは 1 つの箱にまとめ、名前は 2 行(FF の段の間を横に広げない。説明は注記に書く)
+                cells.append(dict(id="u_cap", type="block", **{"in": [din, en]}, out="d_sel",
+                                  label="空でなければ\n読み出す" if cls == "fifo" else "条件が立てば\n取り込む"))
                 c = dict(id="u_dst", type="dff", d="d_sel", ck=dclk, q=out, label=cut(nm(dpath), 22))
                 if cls in ("handshake", "fifo"):
                     c["cdc_ok"] = "同期化した制御が立っている間だけ取り込む(送り側はその間データを変えない)"
@@ -564,8 +660,14 @@ def detail(db, dst_re):
             if cls == "static":
                 c["cdc_ok"] = "準静的(動作中に変えない設定)"
             cells.append(c); gd.append("u_dst")
-    y = dict(title=f"CDC 詳細図: {cut(short(rows[0][3]), 40)} → {cut(short(dpath), 40)}",
-             note="。".join(note) + f"。送り側 {short(rows[0][8])} → 受け側 {short(rows[0][9])}",
+    how = {"fifo": "書きポインタを 2 段で同期化し、読みポインタと比べて空でない時だけメモリを読む",
+           "handshake": "送り側の要求を 2 段で同期化し、それで作った条件が立った時だけデータを取り込む(その間、送り側はデータを変えない)",
+           "gated": "同期化した信号とデータを論理で合わせてから受ける", "data_enable": "取り込みの条件が同期化されていない",
+           "no_sync": "同期化の FF がない", "mem": "ポインタの同期化が見つからない", "sync_bus": "グレイコードでない多ビットをそのまま FF で受けている",
+           "sync_logic": "論理でまとめた後に同期化している(グリッチを取り込む)", "sync_tap": "1 段目の出力をほかの論理でも使っている"}.get(cls)
+    y = dict(title=f"CDC 詳細図: {cut(nm(rows[0][3]), 34)} → {cut(nm(dpath), 34)}",
+             note=CLASS_JA[cls] + (f"。{how}" if how else "") + (f"。送り側は {len(rows)} 本(図は 4 本まで)" if len(rows) > 4 else "")
+             + f"。受け側の FF: {short(dpath)}",
              ports=ports, cells=cells,
              groups=[dict(label=f"送り側ドメイン {cut(short(rows[0][8]), 30)}", cells=gs, color="#2563eb"),
                      dict(label=f"受け側ドメイン {cut(short(rows[0][9]), 30)}", cells=gd, color="#7c3aed")])
@@ -581,13 +683,13 @@ def main():
     h.add_argument("db"); h.add_argument("-o", "--out", default="out"); h.add_argument("--png", action="store_true")
     h.add_argument("--focus"); h.add_argument("--rows", type=int, default=36); h.add_argument("--arcs", type=int, default=28)
     h.add_argument("--name", default="cdc_hier")
-    h.add_argument("--sev", help="線にする重さ(bad,review,ok,info をカンマ区切り)。既定は全部(重い順に --arcs 本まで)")
+    h.add_argument("--sev", help="線にする重さ(none,wrong,review,ok,info をカンマ区切り。bad = none,wrong)。既定は全部(重い順に --arcs 本まで)")
     d = sub.add_parser("detail")
     d.add_argument("db"); d.add_argument("--dst", required=True); d.add_argument("-o", "--out", default="cdc_detail.yaml")
     g = ap.parse_args()
     db = sqlite3.connect(g.db)
     if g.cmd == "hier":
-        p, st = hier(db, g.out, g.focus, g.rows, g.arcs, g.png, g.name, set(g.sev.split(",")) if g.sev else None)
+        p, st = hier(db, g.out, g.focus, g.rows, g.arcs, g.png, g.name, set(g.sev.replace("bad", "none,wrong").split(",")) if g.sev else None)
         print(f"生成: {p}(行 {st['rows']} / 線 {st['arcs']}" + (f" + 省略 {st['rest']}" if st["rest"] else "") + f" / 階層の深さ {st['depth']})")
     else:
         import yaml

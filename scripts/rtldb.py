@@ -15,9 +15,10 @@
   3. クロック: FF のクロック端子から駆動を逆にたどり、源(トップ端子・ブラックボックスの出力・FF の出力=分周・
      複数クロックの合流=切替)を求める。ゲートされたクロックは元のドメインに含める。分周は元と同じ「系」(同期)とする。
   4. CDC: FF ごとに入力の論理の円錐を FF まで逆にたどり、系の違う FF があれば乗り換え。同期化の鎖を先に全部見つけてから分類する。
-       同期化あり: sync / sync_gray / sync_pulse(エッジ検出)/ fifo(非同期 FIFO のデータ)/ handshake(同期化した条件で取り込む)
-       要確認:     gated(同期化した信号と論理で合わせる)/ sync_bus / data_enable / mem / reconv(再収束)/ clk_as_data
-       要対策:     sync_logic(同期化の前に論理)/ sync_tap(1 段目を使用)/ no_sync
+       対策あり:   sync / sync_gray(記述 X ^ (X >> 1) で確認。名前は見ない)/ sync_pulse(エッジ検出)/ fifo / handshake
+       要確認:     gated(同期化した信号と論理で合わせる)/ reconv(再収束)/ clk_as_data
+       対策なし:   no_sync / data_enable(条件が同期化されていない)/ mem(ポインタの同期化がない)  ← 対策忘れの疑い
+       対策の誤り: sync_bus(グレイコードでない多ビットを FF で同期化)/ sync_logic(同期化の前に論理)/ sync_tap(1 段目を使用)
   5. RDC: FF の非同期リセットを逆にたどる: rst_sync / rst_ok / rst_input / rst_logic / rst_cross
 """
 import os, sys, re, json, argparse, sqlite3, collections, time
@@ -28,7 +29,8 @@ CREATE TABLE instance(id INTEGER PRIMARY KEY, path TEXT UNIQUE, name TEXT, modul
 CREATE TABLE signal(id INTEGER PRIMARY KEY, path TEXT UNIQUE, name TEXT, inst INTEGER, width INTEGER,
                     kind TEXT,      -- port / net / var / pin(ブラックボックスの端子)/ pseudo
                     dir TEXT,       -- in / out / inout(端子のみ)
-                    is_top INTEGER, is_mem INTEGER, file TEXT, line INTEGER);
+                    is_top INTEGER, is_mem INTEGER, file TEXT, line INTEGER,
+                    enc TEXT);      -- 代入の形: gray(b ^ (b >> 1) の記述)/ pass(選ぶ・保持するだけ)/ other
 CREATE TABLE edge(id INTEGER PRIMARY KEY, dst INTEGER, src INTEGER,
                   kind TEXT,        -- comb / seq / conn / arst
                   role TEXT,        -- data / ctrl
@@ -49,16 +51,20 @@ CREATE VIEW conn AS   -- 兄弟ブロック間・上位との接続(図を描く
   FROM edge e JOIN signal s ON s.id=e.src JOIN signal d ON d.id=e.dst
   JOIN instance si ON si.id=s.inst JOIN instance di ON di.id=d.inst WHERE e.kind='conn';
 """
-OK_CLASSES = ("sync", "sync_gray", "sync_pulse", "fifo", "handshake")
+OK_CLASSES = ("sync", "sync_gray", "sync_pulse", "fifo", "handshake")       # 対策あり
 INFO = ("static",)
-REVIEW = ("gated", "sync_bus", "data_enable", "mem", "reconv", "clk_as_data")
-BAD = ("no_sync", "sync_logic", "sync_tap")
-CLASS_JA = {"sync": "同期化あり(2 段以上)", "sync_gray": "同期化あり(グレイコード)", "sync_pulse": "同期化 + エッジ検出(パルス/トグル)",
+REVIEW = ("gated", "reconv", "clk_as_data")                                   # 要確認
+NONE = ("no_sync", "data_enable", "mem")                                      # 対策なし(忘れの疑い)
+WRONG = ("sync_bus", "sync_logic", "sync_tap")                                # 対策の誤り
+BAD = NONE + WRONG
+CLASS_JA = {"sync": "同期化あり(2 段以上)", "sync_gray": "同期化あり(グレイコードの記述を確認)", "sync_pulse": "同期化 + エッジ検出(パルス/トグル)",
             "fifo": "非同期 FIFO のデータ(両向きのポインタ同期あり)", "handshake": "同期化した制御で取り込むデータ(ハンドシェイク)",
-            "gated": "同期化した信号と論理で合わせて使用(ゲートの形・要確認)", "sync_bus": "多ビットを FF で同期化(要確認)", "data_enable": "受け側の条件で取り込むデータ(要確認)",
-            "mem": "別クロックで書くメモリ(要確認)", "reconv": "別々に同期化した信号の再収束(要確認)",
+            "gated": "同期化した信号と論理で合わせて使用(ゲートの形・要確認)", "reconv": "別々に同期化した信号の再収束(要確認)",
             "clk_as_data": "クロックをデータとして使用(要確認)", "static": "準静的と宣言(設定レジスタ)",
-            "sync_logic": "同期化の前に論理(グリッチ)", "sync_tap": "1 段目の出力を論理で使用", "no_sync": "同期化なし"}
+            "no_sync": "対策なし: 同期化が見つからない", "data_enable": "対策なし: 取り込みの条件が同期化されていない",
+            "mem": "対策なし: 別クロックで書くメモリ(ポインタの同期化が見つからない)",
+            "sync_bus": "対策の誤り: グレイコードでない多ビットを FF で同期化", "sync_logic": "対策の誤り: 同期化の前に論理(グリッチ)",
+            "sync_tap": "対策の誤り: 1 段目の出力を論理で使用"}
 RDC_JA = {"rst_sync": "リセット同期化回路(非同期アサート・同期解除)", "rst_ok": "同じドメインの FF が出すリセット",
           "rst_input": "外部入力のリセットを直接使用(解除が非同期・要確認)", "rst_logic": "複数の FF の論理で作るリセット(グリッチ・要確認)",
           "rst_cross": "別ドメインの FF が出すリセット(要対策)"}
@@ -71,7 +77,9 @@ class Builder:
         self.ps, self.A = ps, ps.ast
         self.insts, self.sig, self.sigs, self.edges, self.ffs = [], {}, [], [], {}
         self.bbconn = []
+        self.grayfn = {}
         self.leaf, self.kids, self.nosplit, self.nhub, self.dim = {}, {}, False, 0, {}
+        self.venc = {}                                    # 節点 → 代入の形(gray / pass / other)
         self.nwarn = collections.Counter()
     def compile(self, files, top, incs, defs, extra=""):
         ps = self.ps
@@ -434,6 +442,88 @@ class Builder:
         except Exception:
             return 0
     # ---- 文 ----
+    @staticmethod
+    def norm(e):
+        """式の文字列(空白と外側のかっこを除く)。同じ式かどうかの比較用"""
+        t = re.sub(r"\s+", "", str(e.syntax)) if e.syntax is not None else ""
+        while t.startswith("(") and t.endswith(")"):
+            d, ok = 0, True
+            for n, c in enumerate(t):
+                d += (c == "(") - (c == ")")
+                if d == 0 and n < len(t) - 1:
+                    ok = False
+                    break
+            if not ok:
+                break
+            t = t[1:-1]
+        return t
+
+    def gray_expr(self, e, depth=0):
+        """グレイコードへの変換の記述か: X ^ (X >> 1)、X ^ {1'b0, X[n:1]}、その記述を持つ関数の呼び出し"""
+        K = self.A.ExpressionKind
+        try:
+            while e.kind == K.Conversion:
+                e = e.operand
+            if e.kind == K.Call and depth < 2:
+                key = e.subroutine.name + "@" + str(self.loc(e.subroutine.location))
+                if key not in self.grayfn:
+                    self.grayfn[key] = False
+                    found = []
+
+                    def walk(st):
+                        for a in ("body", "stmt", "ifTrue", "ifFalse"):
+                            x = getattr(st, a, None)
+                            if x is not None and hasattr(x, "kind"):
+                                walk(x)
+                        for x in getattr(st, "list", None) or []:
+                            walk(x)
+                        x = getattr(st, "expr", None)
+                        if x is not None and hasattr(x, "kind"):
+                            r = x.right if x.kind == K.Assignment else x
+                            if self.gray_expr(r, depth + 1):
+                                found.append(1)
+                    walk(e.subroutine.body)
+                    self.grayfn[key] = bool(found)
+                return self.grayfn[key]
+            if e.kind == K.ConditionalOp:
+                return self.gray_expr(e.left, depth) and self.gray_expr(e.right, depth)
+            if e.kind == K.Concatenation:                # 2 ビット: {X[1], ^X}
+                ops = list(e.operands)
+                if len(ops) == 2 and ops[1].kind == K.UnaryOp and str(ops[1].op).endswith("BitwiseXor") \
+                        and ops[1].operand.type.bitWidth == 2 and ops[0].kind == K.ElementSelect \
+                        and self.norm(ops[0].value) == self.norm(ops[1].operand) and self.const(ops[0].selector) is not None:
+                    return True
+            if e.kind == K.BinaryOp and str(e.op).endswith("BinaryXor"):
+                for a, b in ((e.left, e.right), (e.right, e.left)):
+                    while b.kind == K.Conversion:
+                        b = b.operand
+                    while a.kind == K.Conversion:
+                        a = a.operand
+                    if b.kind == K.BinaryOp and str(b.op).endswith("LogicalShiftRight") and self.const(b.right) == 1 \
+                            and (a.kind == K.LValueReference or (self.norm(b.left) == self.norm(a) and self.norm(a))):
+                        return True                       # X ^ (X >> 1)。g = X; g ^= (X >> 1); の形も
+                    if b.kind == K.Concatenation:
+                        ops = list(b.operands)
+                        if len(ops) == 2 and self.const(ops[0]) == 0 and ops[0].type.bitWidth == 1 and ops[1].kind == K.RangeSelect \
+                                and self.norm(ops[1].value) == self.norm(a) and min(self.const(ops[1].left), self.const(ops[1].right)) == 1:
+                            return True
+        except Exception:
+            pass
+        return False
+
+    def selonly(self, e):
+        """値を作らず、選ぶ・保持するだけの式か(名前・選択・連接・条件演算子・定数)"""
+        K = self.A.ExpressionKind
+        while e.kind == K.Conversion:
+            e = e.operand
+        if e.kind == K.ConditionalOp:
+            return self.selonly(e.left) and self.selonly(e.right)
+        return e.kind in (K.IntegerLiteral, K.UnbasedUnsizedIntegerLiteral) or self.plain(e)
+
+    def setenc(self, t, enc):
+        if enc and self.venc.get(t) != "other":
+            self.venc[t] = "gray" if "gray" in (enc, self.venc.get(t)) and enc != "other" else enc
+
     def assign(self, e, kind, conds, clk=None, arst=()):
         ln = self.line(e)
         K = self.A.ExpressionKind
@@ -456,6 +546,7 @@ class Builder:
                             self.emit([self.kid(lv[0][1], lo, lo + w - 1)], self.refs(o, []), self.plain(o), [], None,
                                       kind, conds, clk, arst, ln)
                             lo += w
+                    self.setenc(lv[0][1], "other")
                     return
         except Exception:
             pass
@@ -465,6 +556,10 @@ class Builder:
         d = self.plain(e.right) and not deps
         pr = self.pairs(self.whole(e.left), self.whole(e.right))      # 構造体どうし: メンバごとに 1 対 1
         self.emit(tg, rs, d, deps, pr, kind, conds, clk, arst, ln)
+        if rs:                                            # 定数だけの代入(リセット値)は形を変えない
+            enc = "gray" if self.gray_expr(e.right) else "pass" if self.selonly(e.right) and not deps else "other"
+            for t in set(tg):
+                self.setenc(t, enc)
 
     def emit(self, tg, rs, d, deps, pr, kind, conds, clk, arst, ln):
         tg = set(tg)
@@ -592,6 +687,8 @@ class Builder:
                         pr = self.pairs(ts, self.whole(ini))
                         for L, R in (pr if pr is not None else [([t for _, t in ts], self.refs(ini, []))]):
                             self.fan(L, R, "comb", "data", d, self.line(ini))
+                        for _, t in ts:
+                            self.setenc(t, "gray" if self.gray_expr(ini) else "pass" if self.selonly(ini) else "other")
             elif k == SK.ContinuousAssign:
                 self.assign(m.assignment, "comb", [])
             elif k == SK.ProceduralBlock:
@@ -665,6 +762,8 @@ class Builder:
                 pl = self.plain(e)
                 for L, R in (pr if pr is not None else [([s for _, s in lv], self.refs(e, []))]):
                     self.fan(L, R, "conn", "data", pl, ln2)
+                for _, s in lv:
+                    self.setenc(s, "gray" if self.gray_expr(e) else "pass" if self.selonly(e) else "other")
             if d in ("out", "inout"):
                 tg, dp = [], []
                 self.lhs(e, tg, dp)
@@ -783,9 +882,9 @@ class Builder:
         db.executemany("INSERT INTO instance VALUES(?,?,?,?,?,?,?,?,?)",
                        [(i, x["path"], x["name"], x["module"], x["parent"], x["depth"], x["blackbox"], x["file"], x["line"])
                         for i, x in enumerate(self.insts)])
-        db.executemany("INSERT INTO signal VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        db.executemany("INSERT INTO signal VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                        [(i, s["path"], s["name"], s["inst"], s["width"], s["kind"], s["dir"], s["is_top"], s["is_mem"], s["file"],
-                         s["line"]) for i, s in enumerate(self.sigs)])
+                         s["line"], self.venc.get(i)) for i, s in enumerate(self.sigs)])
         db.executemany("INSERT INTO edge(dst,src,kind,role,direct,inst,line) VALUES(?,?,?,?,?,?,?)", list(dict.fromkeys(self.edges)))
         db.executemany("INSERT INTO ff(sig,clk,edge) VALUES(?,?,?)", [(s, c[0], c[1]) for s, c in self.ffs.items()])
         db.commit()
@@ -797,6 +896,7 @@ class Analyzer:
         self.db = db
         self.S = {r[0]: dict(zip(("id", "path", "name", "inst", "width", "kind", "dir", "is_top", "is_mem"), r))
                   for r in db.execute("SELECT id,path,name,inst,width,kind,dir,is_top,is_mem FROM signal")}
+        self.enc = {r[0]: r[1] for r in db.execute("SELECT id,enc FROM signal WHERE enc IS NOT NULL")}
         self.fin = collections.defaultdict(list)      # dst -> [(src, kind, role, direct)]
         self.fout = collections.defaultdict(list)
         for d, s, k, r, di in db.execute("SELECT dst,src,kind,role,direct FROM edge"):
@@ -947,7 +1047,7 @@ class Analyzer:
             i = self.ipar.get(i)
         return out
 
-    def cdc(self, static=(), async_in=()):
+    def cdc(self, static=(), async_in=(), gray_decl=()):
         self.domains()
         self.ipar = {r[0]: r[1] for r in self.db.execute("SELECT id,parent FROM instance")}
         S, dom, fam = self.S, self.dom, self.fam
@@ -963,6 +1063,21 @@ class Analyzer:
         stat = {f for f in self.ffclk if any(p.search(S[f]["path"]) for p in pats)}
         wmem = {x for x in self.ffclk if S[x]["is_mem"]}
         nsc = {}
+        # グレイコードの信号: 記述(X ^ (X >> 1))で作った信号と、それをそのまま受け渡す・保持するだけの信号。名前は見ない
+        gray = {i for i, e in self.enc.items() if e == "gray"}
+        for p_ in [re.compile(x) for x in gray_decl]:     # 記述から読み取れないグレイコードは宣言する(理由を残す)
+            gray |= {i for i in self.ffclk if p_.search(S[i]["path"])}
+        work = list(gray)
+        while work:
+            x = work.pop()
+            for y, k, r, di in self.fout[x]:
+                if y in gray or r != "data" or k == "arst" or S[y]["kind"] == "part":
+                    continue
+                srcs = [(s_, d_) for s_, k_, r_, d_ in self.fin[y] if r_ == "data" and k_ != "arst" and s_ != y]
+                ok = self.enc.get(y) == "pass" or (self.enc.get(y) is None and all(d_ for _, d_ in srcs))
+                if ok and srcs and all(s_ in gray for s_, _ in srcs):
+                    gray.add(y); work.append(y)
+        self.gray = gray
 
         def nstage(x):
             if x not in nsc:
@@ -1119,7 +1234,7 @@ class Analyzer:
                     cls = "sync_tap"
                 elif w == 1:
                     cls = "sync_pulse" if any(v > 1 for v in use.values()) else "sync"
-                elif re.search(r"gr[ae]?y", S[f]["name"] + S[next(iter(xd))]["name"], re.I):
+                elif next(iter(xd)) in gray:
                     cls = "sync_gray"
                 else:
                     cls = "sync_bus"
@@ -1266,12 +1381,13 @@ def report(db, out):
     for (sc, dc), c in sorted(agg.items(), key=lambda kv: -sum(kv[1].values())):
         L.append(f"| `{cn[sc]}` → `{cn[dc]}` | " + " | ".join(str(c[x]) if c[x] else "" for x in OK_CLASSES + REVIEW + BAD) + " |")
     cand = db.execute("""SELECT s.path, count(DISTINCT c.dst) n FROM cdc c JOIN signal s ON s.id=c.src
-                         WHERE c.class='no_sync' GROUP BY c.src HAVING n>=5 ORDER BY n DESC LIMIT 30""").fetchall()
+                         WHERE c.class IN ('no_sync','data_enable') GROUP BY c.src HAVING n>=5 ORDER BY n DESC LIMIT 30""").fetchall()
     if cand:
         L += ["", "## 準静的な設定レジスタの候補", "",
-              "同期化なしで多くの FF に届いている送り側です。動作中に変えない設定なら `analyze --static '正規表現'` で宣言すると、要対策から外れます。", "",
+              "対策なしで多くの FF に届いている送り側です。動作中に変えない設定なら `analyze --static '正規表現'` で宣言すると、対策なしから外れます(理由を残す)。", "",
               "| 送り側 | 届く FF |", "|---|---|"] + [f"| `{short(p)}` | {n} |" for p, n in cand]
-    for title, classes in (("要対策(同期化なし・グリッチ・1 段目の使用)", BAD), ("要確認", REVIEW), ("同期化あり", OK_CLASSES),
+    for title, classes in (("対策なし(非同期対策を忘れている疑い)", NONE), ("対策の誤り(グレイコードでない多ビット・グリッチ・1 段目の使用)", WRONG),
+                           ("要確認", REVIEW), ("対策あり", OK_CLASSES),
                            ("準静的と宣言した乗り換え", INFO)):
         q = ",".join("'%s'" % c for c in classes)
         rows = db.execute(f"""SELECT d.path, c.class, c.stages, c.width, group_concat(DISTINCT s.path), sc.name, dc.name, d.file, d.line, max(c.logic)
@@ -1356,13 +1472,13 @@ def cdc_map(db, out, agg, cn, png=False):
             ok, rv, bad = sum(c[k] for k in OK_CLASSES), sum(c[k] for k in REVIEW), sum(c[k] for k in BAD)
             col = "#dc2626" if bad else ("#d97706" if rv else "#16a34a")
             o.append(f'<rect x="{x + 3}" y="{y + 3}" width="{CW - 6}" height="{RH - 6}" rx="4" fill="{col}" fill-opacity=".1" stroke="{col}" stroke-width="1.6"/>')
-            for k, (lab, v, cc) in enumerate((("同期化あり", ok, "#16a34a"), ("要確認", rv, "#b45309"), ("要対策", bad, "#dc2626"))):
+            for k, (lab, v, cc) in enumerate((("対策あり", ok, "#16a34a"), ("要確認", rv, "#b45309"), ("対策なし・誤り", bad, "#dc2626"))):
                 o.append(f'<text x="{x + 12}" y="{y + 20 + k * 15}" font-size="10.5" fill="{cc if v else "#cbd5e1"}" '
                          f'font-weight="{800 if v else 400}">{lab} {v}</text>')
     yb = Y0 + 40 + len(doms) * RH + 26
-    o.append(f'<text x="{X0}" y="{yb}" font-size="11" fill="#64748b">同期化あり = 論理なしで受けて 2 段以上の FF(1 ビット・グレイコード)/ '
-             f'要確認 = 多ビットの同期化・受け側の条件で取り込むデータ・別クロックで書くメモリ</text>'
-             f'<text x="{X0}" y="{yb + 17}" font-size="11" fill="#64748b">要対策 = 同期化なし・同期化の前に論理・1 段目の出力を使用。'
+    o.append(f'<text x="{X0}" y="{yb}" font-size="11" fill="#64748b">対策あり = 2 段以上の FF・グレイコード(記述で確認)・非同期 FIFO・ハンドシェイク / '
+             f'要確認 = ゲートの形・再収束 / 対策なし・誤り = 同期化なし・条件やポインタが同期化されていない・グレイコードでない多ビット・同期化の前に論理</text>'
+             f'<text x="{X0}" y="{yb + 17}" font-size="11" fill="#64748b">グレイコードは記述で確かめる(名前は見ない)。'
              f'信号単位の解析(ビットごとではない)。詳細は cdc.md</text></svg>')
     p = os.path.join(out, "cdc_map.svg")
     open(p, "w", encoding="utf-8").write("".join(o))
@@ -1523,6 +1639,7 @@ def main():
     a.add_argument("db"); a.add_argument("-o", "--out", default="out"); a.add_argument("--png", action="store_true")
     a.add_argument("--static", action="append", default=[], help="準静的な送り側(階層パスの正規表現)。動作中に変えない設定レジスタ")
     a.add_argument("--async-in", action="append", default=[], help="非同期の入力端子(階層パスの正規表現)。それぞれ別のドメインとして扱う")
+    a.add_argument("--gray", action="append", default=[], help="グレイコードの FF(階層パスの正規表現)。記述から読み取れない時だけ宣言する")
     i = sub.add_parser("iface")
     i.add_argument("db"); i.add_argument("--inst", required=True); i.add_argument("-o", "--out", default="iface.yaml")
     s = sub.add_parser("stats")
@@ -1572,7 +1689,7 @@ def main():
         db = sqlite3.connect(g.db)
         t0 = time.time()
         an = Analyzer(db)
-        rows = an.cdc(g.static, g.async_in)
+        rows = an.cdc(g.static, g.async_in, g.gray)
         an.save(rows)
         agg, cn = report(db, g.out)
         p = cdc_map(db, g.out, agg, cn, g.png)
