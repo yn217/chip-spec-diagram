@@ -440,6 +440,18 @@ items:
     priority: 33
     modes: [concept, rtl, mixed]
   # ---- CDC(非同期箇所の図。diagrams/cdc/GUIDE.md)----
+  - id: cdc_sdc
+    category: CDC
+    q: タイミング制約(SDC / XDC)はありますか？(合成ツールが展開して書き出したもの(write_sdc)が一番読みやすい)
+    free: true
+    options:
+      - {label: ある, description: ファイルの場所を入力(rtldb.py analyze --sdc)}
+      - {label: まだない, description: RTL だけで解析し、制約に入れるべきクロックの組を報告する}
+    effect: 制約との突き合わせ(sdc_check.md)。非同期と宣言した組の対策忘れ、制約のない組、非同期入力の端子
+    assume: まだない
+    priority: 34
+    modes: [rtl, mixed]
+    depends_on: ["rtl=ある"]
   - id: cdc_async_in
     category: CDC
     q: 外から来る非同期の入力端子(ボタン・割り込み・別チップからの信号など)はどれですか？

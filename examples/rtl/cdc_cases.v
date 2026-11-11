@@ -208,5 +208,15 @@ module cdc_cases (
   always @(posedge clk_b) begin t2_2 <= t2_1; t2_3 <= t2_2; t2_4 <= t2_3; end
   wire ev0 = t2_3[0] ^ t2_4[0];
   wire ev1 = t2_3[1] ^ t2_4[1];
-  always @(posedge clk_b) o_new <= k_ok ^ k_l ^ b_cap ^ b_enc ^ b_fake_gray ^ {4'h0, b_gq} ^ {6'h0, ev1, b_pulse ^ irq_q ^ ck_smp ^ b_both ^ b_inv ^ b_two0 ^ b_p ^ ev0};
+  // 27. 配列 + for 文で書いた同期化(sr[0] <= x; for (k = 1; k < N; k++) sr[k] <= sr[k-1];)  → 同期化あり
+  reg a_arr;
+  always @(posedge clk_a) a_arr <= din[3];
+  reg sr [0:2];
+  integer kk;
+  always @(posedge clk_b) begin
+    sr[0] <= a_arr;
+    for (kk = 1; kk < 3; kk = kk + 1) sr[kk] <= sr[kk - 1];
+  end
+
+  always @(posedge clk_b) o_new <= {7'h0, sr[2]} ^ k_ok ^ k_l ^ b_cap ^ b_enc ^ b_fake_gray ^ {4'h0, b_gq} ^ {6'h0, ev1, b_pulse ^ irq_q ^ ck_smp ^ b_both ^ b_inv ^ b_two0 ^ b_p ^ ev0};
 endmodule

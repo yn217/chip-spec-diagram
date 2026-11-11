@@ -200,6 +200,7 @@ RTL から作ったデータベースを元に、クロックの乗り換えを�
 | `dataflowfp.py` | データフロー検討図(フロアプラン風の配置に、辺の端子 → PHY → バス → 行き先の流れ、距離・帯域の表) |
 | `gallery.py` | サンプルから全種類の図を今の描き方で描き直す(`docs/gallery/regen/` に出す。README の図の差し替え用) |
 | `rtldb.py` | RTL の接続を SQLite のデータベースにする(slang でエラボレート)。クロックドメイン・非同期の乗り換え(CDC 15 分類。対策忘れの検出が主目的)・リセットの乗り換え(RDC)の検出、経路の表示(`path`)、答え付きの自己確認(`selftest`)、接続図用 YAML の出力。OpenTitan top_earlgrey(51.5 万行・階層 11 段)で確認。方式は `reference/rtldb.md` |
+| `sdccheck.py` | タイミング制約(SDC / XDC)と RTL のクロック・乗り換えの突き合わせ(`rtldb.py analyze --sdc` から呼ぶ)。非同期と宣言した組の対策忘れを見つける |
 | `cdcdiag.py` | CDC 階層表(送り側 × 受け側の表。線を描かない)、CDC 階層図(階層 × クロックドメインに乗り換えの線)、CDC 詳細図(乗り換え 1 本の回路 → `gatediag.py`) |
 | `storyboard.py` | 動作説明のストーリーボード(構成図を使い回し、ステップごとのコマを 1 枚に並べる) |
 | `ifdiag.py` | ブロック間の接続図(YAML または RTL から。AXI/APB の束ね、lint、SVG/PNG/draw.io) |

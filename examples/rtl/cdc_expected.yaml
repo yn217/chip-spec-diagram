@@ -1,9 +1,11 @@
 # rtldb.py selftest の答え。受け側の FF(階層パスの正規表現)→ 分類。
 # ここにない乗り換えが出たら失敗、none の所に出ても失敗(見逃しと誤検出の両方を確かめる)。
-- name: 分類 26 種(cdc_cases.v)
+- name: 分類 27 種(cdc_cases.v)
   files: [cdc_cases.v]
   top: cdc_cases
   async_in: ['ext_']                     # 非同期の入力端子
+  sdc: [cdc_cases.sdc]                   # 制約との突き合わせ(ext_irq・ext_btn は set_false_path -from で非同期入力)
+  sdc_expect: {nodef: 1, danger: 1, unread: 1}   # clk_c の定義なし / clk_a⇔clk_b を非同期と宣言した中に対策なし / foreach の行
   expect:
     'u_ok\.s1$': sync                    # 1. 2 段で同期化
     'cdc_cases\.b_bad$': no_sync         # 2. 同期化なし
@@ -34,6 +36,7 @@
     'u_enc\.s1$': sync_gray              # 22. 名前に gray がなくても、記述がグレイコード
     'u_fake_gray\.s1$': sync_bus         # 23. 名前は gray でも、記述がグレイコードでない
     'u_gbit\.s1$': sync_gray             # 24. ビットごとに書いたグレイコード(generate)
+    'cdc_cases\.sr\[0\]$': sync          # 27. 配列 + for 文で書いた同期化(展開して要素ごとに追う)
     'u_cat\.s1$': sync                   # 25. 端子に連接をつないだバッファを通して 1 ビットずつ同期化
     'cdc_cases\.t2_2$': sync_pulse       # 26. 2 ビットに独立したトグル 2 本(1 ビットずつエッジ検出)
   none:

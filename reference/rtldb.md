@@ -4,7 +4,7 @@ RTL の接続を SQLite のデータベースにし、図(ブロック間の接�
 
 ```
 python3 scripts/rtldb.py build -o design.db --top TOP -I incdir a.v b.sv ...   # RTL → DB(-f ファイル一覧 も可)
-python3 scripts/rtldb.py analyze design.db -o out/ --png [--static '正規表現'] [--async-in '正規表現'] [--gray '正規表現']
+python3 scripts/rtldb.py analyze design.db -o out/ --png [--static '正規表現'] [--async-in '正規表現'] [--gray '正規表現'] [--sdc chip.sdc]
                                                     # クロック・CDC・RDC → cdc.md, cdc_map.svg, cdc_matrix.svg(表), cdc_hier.svg(線)
 python3 scripts/rtldb.py path design.db --src 正規表現 --dst 正規表現           # 送り側から受け側までの経路(階層をまたぐ信号の並び)
 python3 scripts/rtldb.py iface design.db --inst top.u_x -o iface.yaml          # → ifdiag.py render iface.yaml
@@ -69,6 +69,14 @@ python3 scripts/cdcdiag.py detail design.db --dst 正規表現 -o out/x.yaml    
    `--gray '正規表現'` で宣言する(理由を決定事項に残す)。
 
    `--async-in '正規表現'` で指定したトップの入力端子は、それぞれ別のドメイン(非同期入力)として扱う。
+   ブラックボックスの出力のクロック(PLL・クロックバッファ)は、入力のクロックをたどって同じ系に入れる(BUFR と BUFIO が同じ端子から来れば同期、PLL → BUFG は PLL の入力の系)。
+   ブラックボックスどうしだけでつながる信号は、端子の名前(O・Q・CLKOUT・LOCKED・*_o など)で出力を決める。
+7. **タイミング制約との突き合わせ**(`analyze --sdc`、`scripts/sdccheck.py`): SDC / XDC の create_clock・create_generated_clock・set_clock_groups・
+   set_false_path・set_max_delay を読み、RTL のクロックの系・乗り換えと突き合わせて `sdc_check.md` を出す。
+   (1) クロックの定義のない系、(2) 乗り換えのある組の扱い(非同期の宣言 / 経路ごとの制約 / なし)、
+   (3) **非同期と宣言された組の中の対策なし・誤り**(STA が見ないので、ほかでは見つからない。一番危ない)、
+   (4) `set_false_path -from [get_ports …]` の入力端子(非同期入力として解析し、同期化しているかを見る)。
+   変数・foreach・proc を含む行は読まず、一覧に出す(推測で補わない)。
    `cdc.via` に、条件・ポインタを同期化している FF(1 段目)を残す(詳細図で使う)。
 6. **RDC(非同期リセット)**: FF のリセット端子を逆にたどり、源ごと・受け側ドメインごとに数える。
 
@@ -96,6 +104,7 @@ SELECT d.path, c.class FROM cdc c JOIN signal d ON d.id=c.dst WHERE c.class='no_
 | **OpenTitan top_earlgrey**(SystemVerilog 51.5 万行・823 ファイル) | 38,670 インスタンス / 節点 71.0 万 / 辺 283 万 / FF 21,805(信号単位)/ 階層 11 段 | 抽出 53 秒 + 解析 40 秒、DB 407MB。slang のエラー 16 件(すべて使っていないファイル・設定の $error)。ドメイン: io 12,207・sys 7,717・aon 1,186・usb 545・JTAG 2 本など。受け側 FF 単位で 対策あり: 非同期 FIFO 8,971・2 段以上 597・ハンドシェイク 127 / 要確認: ゲートの形 432・再収束 105・クロックをデータに 10 / 対策なし: 同期化なし 135・条件が同期化されていない 18 / 対策の誤り: グレイコードでない多ビット 49・同期化の前に論理 42。乗り換えの両端は最大 8 段下、上がり + 下がりは最大 12 段 |
 | OpenCores ethmac(Verilog, 約 1.2 万行) | 66 インスタンス / FF 427 | ドメイン 3(wb・mtx・mrx)。設定レジスタを準静的と宣言後、対策なし 53(同期化なし 52・条件 1)・同期化の前に論理 4・1 段目の使用 2・エッジ検出 9・ハンドシェイク 9・ゲートの形 6・再収束 8 |
 | verilog-ethernet Arty の fpga_core(約 4.6 万行を読み込み) | 41 インスタンス / FF 653 | ドメイン 3。対策なし・誤り 0。非同期 FIFO 2・グレイコード 4・2 段以上 5・エッジ検出 11・ハンドシェイク 2・再収束 4。2 ビットのトグルをビットごとにエッジ検出する `rx_sync_reg_1` は、以前の版では「グレイコードでない多ビット」と誤って出ていた(ビットの範囲で追うようにして直った) |
+| verilog-ethernet Arty の最上位 `fpga`(MMCM・BUFG・BUFR・BUFIO はブラックボックス)+ `fpga.xdc` | 52 インスタンス / FF 822 | クロックの系 3(clk・phy_rx_clk・phy_tx_clk。BUFR と BUFIO は同じ phy_rx_clk の系、MMCM → BUFG は clk の系にまとまる)。制約との突き合わせ: クロックの定義はそろっているが、乗り換えのある 4 組に非同期の制約がない(経路ごとの制約は syn/vivado/*.tcl に変数つきで書かれていて、ここでは読まない)。`set_false_path -from` の入力端子: uart_rxd は 2 段で同期化、btn・sw は 3 段の取り込みの 1 段目を論理(\|debounce_reg)でも使う(対策の誤りとして出る。間引いて取り込むのでリスクは低いが、構造としては 1 段目の使用) |
 | Ibex(SystemVerilog) | 37 インスタンス / FF 121 | ドメイン 1(クロックゲートは同じドメイン)、乗り換え 0 |
 
 OpenTitan でソースと突き合わせた例(`rtldb.py path` で経路を出して確認):
@@ -115,7 +124,8 @@ FF の数は信号単位(バスは 1 つ、一部だけ代入した所はその�
 ## 限界
 - 分類は構造だけで決める。グレイコードは記述で判断する(上の形以外は `--gray` で宣言)。ハンドシェイク・ゲートの形は「同期化した信号で条件が作られている」所までで、
   送り側がその間データを変えないこと・ゲートが AND か、は見ない(人が確認する)。
-- 定数でない添字(for 文の `q[i]`)・unpacked 配列はビットや要素を分けずにまとめる(端子につないだ連接 `.q({a, b})` はビットの範囲ごとに追う)。
+- for 文は、変数の初期値・終わりの条件・増やし方が定数(パラメータ含む)で決まり 256 回以内なら展開して、`q[k] <= q[k-1]` を要素・ビットごとに追う。
+  決まらない for 文・while 文と、定数でない添字はまとめたまま。unpacked 配列は 16 要素・2048 ビット以下なら要素ごとに分け(メモリの印は残す)、それより大きいものはまとめる。
   ここを通ると、別々の信号が 1 つに見えて「同期化の前に論理」「同期化なし」が多めに出る。
 - 再収束は、同じインスタンスの送り側どうしで、組み合わせだけで合流するものに限る(FF をはさんだ先の合流は見ない)。
 - 分周クロックは元と同期とみなす。SDC の `set_clock_groups` は読まない(系の同期・非同期は構造から決める)。

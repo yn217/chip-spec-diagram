@@ -72,6 +72,10 @@ RDC_JA = {"rst_sync": "リセット同期化回路(非同期アサート・同�
 
 
 # ================= 1. RTL → DB =================
+# ブラックボックスの出力らしい端子の名前(ブラックボックスどうしがつながる時だけ使う。ほかは駆動の有無で決める)
+OUT_PIN = re.compile(r"^(O|OB|Q|QN|Z|ZN|Y|DO\w*|OUT\w*|CLKOUT\w*|CLKFBOUT\w*|LOCKED|\w*_o|\w*_out)$", re.I)
+
+
 class Builder:
     def __init__(self):
         import pyslang as ps
@@ -81,6 +85,7 @@ class Builder:
         self.grayfn = {}
         self.gbits = {}                                   # 節点 → {ビット: ("bit" | "top", 元の式)}
         self.leaf, self.kids, self.nosplit, self.nhub, self.dim = {}, {}, False, 0, {}
+        self.loopvals = {}                                # 展開中の for 文の変数 → 値
         self.venc = {}                                    # 節点 → 代入の形(gray / pass / other)
         self.nwarn = collections.Counter()
     multi_unit = False
@@ -141,9 +146,9 @@ class Builder:
         A = self.A
         fl = []
 
-        def walk(t, pre):
+        def walk(t, pre, memf=False):
             ct = t.canonicalType
-            et, mem = ct, False
+            et, mem = ct, memf
             try:
                 while et.isArray and len(fl) < 3000:
                     if et.hasFixedRange:
@@ -153,7 +158,12 @@ class Builder:
                         rg = et.fixedRange
                         if "StructType" in str(el.kind) and abs(rg.upper - rg.lower) < 256:
                             for i in range(min(rg.lower, rg.upper), max(rg.lower, rg.upper) + 1):
-                                walk(et.elementType, pre + (f"[{i}]",))      # 構造体の配列は要素ごとに分ける
+                                walk(et.elementType, pre + (f"[{i}]",), mem)  # 構造体の配列は要素ごとに分ける
+                            return
+                        n_ = abs(rg.upper - rg.lower) + 1
+                        if et.isUnpackedArray and n_ <= 16 and n_ * et.elementType.canonicalType.bitWidth <= 2048:
+                            for i in range(min(rg.lower, rg.upper), max(rg.lower, rg.upper) + 1):
+                                walk(et.elementType, pre + (f"[{i}]",), True)   # 小さい配列(同期化の段の並びなど)は要素ごと
                             return
                     mem = mem or bool(et.isUnpackedArray)
                     et = et.elementType.canonicalType
@@ -167,7 +177,7 @@ class Builder:
                 w = 1
             dm = None
             try:
-                if not mem and ct.hasFixedRange and "StructType" not in str(ct.kind):
+                if (not mem or (memf and not ct.isUnpackedArray)) and ct.hasFixedRange and "StructType" not in str(ct.kind):
                     dm = (min(ct.fixedRange.lower, ct.fixedRange.upper), abs(ct.fixedRange.upper - ct.fixedRange.lower) + 1,
                           ct.fixedRange.left >= ct.fixedRange.right)
             except Exception:
@@ -226,12 +236,114 @@ class Builder:
                 out.append((pre[n:], i))
         return out or lv
 
-    def const(self, e):
+    @staticmethod
+    def toint(c):
+        t = str(c).replace("_", "")
+        m = re.match(r"^(?:\d*)'s?([bodh])([0-9a-fA-F]+)$", t)
+        if m:
+            return int(m.group(2), {"b": 2, "o": 8, "d": 10, "h": 16}[m.group(1)])
+        return int(t)
+
+    def lkey(self, sym):
+        try:
+            return (sym.name, self.loc(sym.location))
+        except Exception:
+            return (sym.name, None)
+
+    def const(self, e, depth=0):
+        """定数の式の値。パラメータと、展開中の for 文の変数も使う。決まらなければ None"""
+        if e is None or depth > 40:
+            return None
         try:
             c = e.constant
-            return None if c is None else int(str(c))
+            if c is not None:
+                return self.toint(c)
+        except Exception:
+            pass
+        K = self.A.ExpressionKind
+        try:
+            k = e.kind
+            if k in (K.NamedValue, K.HierarchicalValue):
+                sy = e.symbol
+                v = self.loopvals.get(self.lkey(sy))
+                if v is not None:
+                    return v
+                if sy.kind == self.A.SymbolKind.Parameter:
+                    return self.toint(sy.value)
+                return None
+            if k == K.Conversion:
+                return self.const(e.operand, depth + 1)
+            if k == K.UnaryOp:
+                v = self.const(e.operand, depth + 1)
+                op = str(e.op).split(".")[-1]
+                return None if v is None else -v if op == "Minus" else v if op == "Plus" else None
+            if k == K.BinaryOp:
+                a, b = self.const(e.left, depth + 1), self.const(e.right, depth + 1)
+                if a is None or b is None:
+                    return None
+                op = str(e.op).split(".")[-1]
+                f = {"Add": lambda: a + b, "Subtract": lambda: a - b, "Multiply": lambda: a * b,
+                     "Divide": lambda: a // b if b else None, "Mod": lambda: a % b if b else None,
+                     "LogicalShiftLeft": lambda: a << b, "LogicalShiftRight": lambda: a >> b,
+                     "ArithmeticShiftLeft": lambda: a << b, "ArithmeticShiftRight": lambda: a >> b,
+                     "LessThan": lambda: int(a < b), "LessThanEqual": lambda: int(a <= b), "GreaterThan": lambda: int(a > b),
+                     "GreaterThanEqual": lambda: int(a >= b), "Equality": lambda: int(a == b), "Inequality": lambda: int(a != b)}.get(op)
+                return f() if f else None
         except Exception:
             return None
+        return None
+
+    def unroll(self, s_, kind, conds, clk, arst):
+        """for 文を展開する(変数の初期値・終わりの条件・増やし方が定数で決まり、256 回以内の時)。決まらなければ False"""
+        K = self.A.ExpressionKind
+        vs = []
+        try:
+            for v in (s_.loopVars or []):
+                vs.append((self.lkey(v), self.const(v.initializer)))
+            for a in (s_.initializers or []):
+                if a.kind != K.Assignment or a.left.kind != K.NamedValue:
+                    return False
+                vs.append((self.lkey(a.left.symbol), self.const(a.right)))
+            if not vs or any(x is None for _, x in vs) or s_.stopExpr is None:
+                return False
+            steps = []
+            for st in s_.steps:
+                if st.kind == K.Assignment and st.left.kind == K.NamedValue:
+                    steps.append((self.lkey(st.left.symbol), st.right, None))
+                elif st.kind == K.UnaryOp and st.operand.kind == K.NamedValue:
+                    op = str(st.op).split(".")[-1]
+                    steps.append((self.lkey(st.operand.symbol), None, 1 if "Increment" in op else -1))
+                else:
+                    return False
+        except Exception:
+            return False
+        saved = dict(self.loopvals)
+        vals = dict(vs)
+        seq = []
+        for _ in range(257):
+            self.loopvals = {**saved, **vals}
+            ok = self.const(s_.stopExpr)
+            if ok is None:
+                self.loopvals = saved
+                return False
+            if not ok:
+                break
+            seq.append(dict(self.loopvals))
+            for key, ex, inc in steps:
+                v = self.const(ex) if ex is not None else (vals.get(key) + inc if vals.get(key) is not None else None)
+                if v is None:
+                    self.loopvals = saved
+                    return False
+                vals[key] = v
+                self.loopvals = {**saved, **vals}
+        else:
+            self.loopvals = saved
+            return False
+        for lv in seq:                                    # 1 回ずつ、変数の値を決めて中身を歩く
+            self.loopvals = lv
+            self.stmt(s_.body, kind, conds, clk, arst)
+        self.loopvals = saved
+        return True
 
     def is_sarr(self, t):
         """構造体の配列か"""
@@ -262,7 +374,7 @@ class Builder:
     def nodes(self, r):
         sym, path, part = r
         lv = self.sub(sym, path)
-        if part is None or len(lv) != 1 or self.sigs[lv[0][1]]["is_mem"] or self.nosplit:
+        if part is None or len(lv) != 1 or (self.sigs[lv[0][1]]["is_mem"] and lv[0][1] not in self.dim) or self.nosplit:
             return [i for _, i in lv]
         return [self.kid(lv[0][1], *part)]
 
@@ -272,6 +384,8 @@ class Builder:
         k = e.kind
         if k in (K.NamedValue, K.HierarchicalValue):
             s = e.symbol
+            if self.loopvals and self.lkey(s) in self.loopvals:
+                return None                               # 展開中の for 文の変数(定数)
             if s.kind == self.A.SymbolKind.Net or (s.kind == self.A.SymbolKind.Variable and
                                                    not str(s.lifetime).endswith("Automatic")):
                 return (s, (), None)
@@ -300,7 +414,7 @@ class Builder:
                 return r
             try:
                 vt = e.value.type.canonicalType
-                if self.is_sarr(vt):                      # 構造体の配列: 要素ごとの節点へ
+                if self.is_sarr(vt) or vt.isUnpackedArray:   # 構造体の配列・小さい配列: 要素ごとの節点へ
                     comp = f"[{lo}]" if k == K.ElementSelect else tuple(f"[{i}]" for i in range(lo, hi + 1))
                     return (r[0], r[1] + (comp,), None)
                 if "StructType" in str(vt.kind) or vt.isUnpackedArray:
@@ -380,9 +494,9 @@ class Builder:
                 out += self.nodes(r)
                 x = e
                 while x.kind in (K.MemberAccess, K.ElementSelect, K.RangeSelect, K.Conversion):
-                    if x.kind == K.ElementSelect:
+                    if x.kind == K.ElementSelect and self.const(x.selector) is None:
                         self.refs(x.selector, out)
-                    elif x.kind == K.RangeSelect:
+                    elif x.kind == K.RangeSelect and (self.const(x.left) is None or self.const(x.right) is None):
                         self.refs(x.left, out); self.refs(x.right, out)
                     x = x.operand if x.kind == K.Conversion else x.value
                 return out
@@ -424,9 +538,9 @@ class Builder:
                 tg += self.nodes(r)
                 x = e
                 while x.kind in (K.MemberAccess, K.ElementSelect, K.RangeSelect, K.Conversion):
-                    if x.kind == K.ElementSelect:
+                    if x.kind == K.ElementSelect and self.const(x.selector) is None:
                         self.refs(x.selector, deps)
-                    elif x.kind == K.RangeSelect:
+                    elif x.kind == K.RangeSelect and (self.const(x.left) is None or self.const(x.right) is None):
                         self.refs(x.left, deps); self.refs(x.right, deps)
                     x = x.operand if x.kind == K.Conversion else x.value
             return
@@ -477,7 +591,7 @@ class Builder:
                 return None
             b = lv[0][1]
             dm = self.dim.get(b)
-            if not dm or not dm[2] or self.sigs[b]["is_mem"] or self.sigs[b]["width"] != dm[1]:
+            if not dm or not dm[2] or self.sigs[b]["width"] != dm[1]:
                 return None
             if sum(o.type.bitWidth for o in e.operands) != dm[1]:
                 return None
@@ -614,7 +728,7 @@ class Builder:
                 rl = self.chain(e.left)
                 lt = e.left.type.canonicalType
                 lv = self.sub(rl[0], rl[1]) if rl and rl[2] is None else []
-                if (len(lv) == 1 and not self.sigs[lv[0][1]]["is_mem"] and lt.hasFixedRange and not lt.isUnpackedArray
+                if (len(lv) == 1 and (not self.sigs[lv[0][1]]["is_mem"] or lv[0][1] in self.dim) and lt.hasFixedRange and not lt.isUnpackedArray
                         and "StructType" not in str(lt.kind) and lt.elementType.canonicalType.bitWidth == 1
                         and lt.fixedRange.left >= lt.fixedRange.right
                         and sum(o.type.bitWidth for o in R.operands) == lt.bitWidth):
@@ -699,6 +813,8 @@ class Builder:
             for it in s.items:
                 self.stmt(it.stmt, kind, c, clk, arst)
             self.stmt(s.defaultCase, kind, c, clk, arst)
+        elif k == K.ForLoop and self.unroll(s, kind, conds, clk, arst):
+            pass                                          # 展開できた: q[k] <= q[k-1] がビット・要素ごとにつながる
         elif k in (K.ForLoop, K.WhileLoop, K.DoWhileLoop, K.RepeatLoop, K.ForeachLoop, K.ForeverLoop):
             self.stmt(s.body, kind, conds, clk, arst)
         elif k == K.Timed:
@@ -872,8 +988,23 @@ class Builder:
         for t in tops:
             self.instance(t)
         driven = {e[0] for e in self.edges}
+        driven |= {i for i, sg in enumerate(self.sigs) if sg["is_top"] and sg["dir"] in ("in", "inout")}   # 最上位の入力端子
+        # ブラックボックスどうしだけでつながる信号(PLL → BUFG など): 端子の名前で出力を決める
+        bbnet = collections.defaultdict(list)
+        for pin, r, d in self.bbconn:
+            if r not in driven:
+                bbnet[r].append(pin)
+        for r, ps in bbnet.items():
+            outs = [q for q in ps if OUT_PIN.match(self.sigs[q]["name"])]
+            if outs:
+                driven.add(r)
+                for q in outs:
+                    self.edges.append((r, q, "conn", "data", 1, self.sigs[q]["inst"], 0))
+                self.bbout = getattr(self, "bbout", set()) | set(outs)
         self.bbpin = set()
         for pin, r, d in self.bbconn:                     # ブラックボックス: ほかに駆動のない信号は出力とみなす
+            if pin in getattr(self, "bbout", ()):
+                continue
             if r in driven:
                 self.edges.append((pin, r, "conn", "data", d, self.sigs[pin]["inst"], 0))
             else:
@@ -1070,6 +1201,23 @@ class Analyzer:
             return res
         self.gate_pts, self.mux_src, self.gen_src = set(), {}, {}
         self.croot = {c: root(c) for c in used}
+        # ブラックボックス(クロックバッファ・PLL など)の出力: 入力のクロックをたどる。入力のクロックが 1 系統なら、その系に入れる
+        pins = collections.defaultdict(list)
+        for i, sg in self.S.items():
+            if sg["kind"] == "pin":
+                pins[sg["inst"]].append(i)
+        self.bb_src = {}
+        work = [r for r, k in self.croot.values() if k == "blackbox"]
+        while work:
+            r = work.pop()
+            if r in self.bb_src:
+                continue
+            self.bb_src[r] = []
+            ins = [q for q in pins[self.S[r]["inst"]] if q != r and self.fin[q]]
+            ck = {root(q) for q in ins if clocky(q) or clocky(root(q)[0]) or root(q)[0] in self.croot.values()}
+            ck = {x for x in ck if x[1] in ("primary", "blackbox", "mux", "undriven", "generated") and x[0] != r}
+            self.bb_src[r] = sorted(x[0] for x in ck)
+            work += [x[0] for x in ck if x[1] == "blackbox"]       # PLL → バッファ のように続く時は、さらに入力をたどる
         return self.croot
     def domains(self):
         self.clock_roots()
@@ -1081,7 +1229,11 @@ class Analyzer:
                 return fam[dm]
             k = kinds.get(dm)
             res = dm
-            if k == "generated" and dm not in seen:
+            if (k == "blackbox" or (k is None and self.bb_src.get(dm))) and self.bb_src.get(dm) and dm not in seen:
+                fs = {family(p, seen + (dm,)) for p in self.bb_src[dm]}
+                if len(fs) == 1:
+                    res = next(iter(fs))                  # バッファ・PLL の出力: 入力のクロックと同じ系
+            elif k == "generated" and dm not in seen:
                 ps = {self.dom[s] for s in ([dm] if dm in self.dom else self.gen_src.get(dm, [])) if s in self.dom}
                 ps |= {self.dom[s] for s in self.gen_src.get(dm, []) if s in self.dom}
                 fs = {family(p, seen + (dm,)) for p in ps}
@@ -1479,7 +1631,7 @@ class Analyzer:
                 gated[self.dom[f]] += 1
         for dm in sorted(nff, key=lambda d: -nff[d]):
             k = self.kinds.get(dm, "?")
-            par = self.mux_src.get(dm) or self.gen_src.get(dm) or ([self.dom[dm]] if dm in self.dom else [])
+            par = self.mux_src.get(dm) or self.gen_src.get(dm) or self.bb_src.get(dm) or ([self.dom[dm]] if dm in self.dom else [])
             db.execute("INSERT INTO clock VALUES(?,?,?,?,?,?,?,?)",
                        (dm, dm, self.name(dm), k, self.fam[dm], ", ".join(self.name(p) for p in par), nff[dm], gated[dm]))
         for dm in sorted({r[2] for r in rows} - set(nff)):        # FF のないドメイン(非同期の入力端子・データに使ったクロック)
@@ -1505,7 +1657,7 @@ def report(db, out):
     for i, name, kind, fam, par, nff, ng in db.execute("SELECT id,name,kind,family,parent,n_ff,n_gated FROM clock ORDER BY n_ff DESC"):
         cn[i] = short(name)
     for i, name, kind, fam, par, nff, ng in db.execute("SELECT id,name,kind,family,parent,n_ff,n_gated FROM clock ORDER BY n_ff DESC"):
-        L.append(f"| `{short(name)}` | {kind} | `{cn.get(fam, '?')}` | {' '.join('`' + short(p) + '`' for p in par.split(', ') if p)} | {nff} | {ng or ''} |")
+        L.append(f"| `{short(name)}` | {kind} | `{cn.get(fam) or short(db.execute('SELECT path FROM signal WHERE id=?', (fam,)).fetchone()[0])}` | {' '.join('`' + short(p) + '`' for p in par.split(', ') if p)} | {nff} | {ng or ''} |")
     L += ["", "## 乗り換え(受け側の FF 単位)", "", "| 送り側 → 受け側 | " + " | ".join(CLASS_JA[c] for c in OK_CLASSES + REVIEW + BAD) + " |",
           "|---|" + "---|" * len(OK_CLASSES + REVIEW + BAD)]
     agg = collections.defaultdict(collections.Counter)
@@ -1799,7 +1951,13 @@ def selftest(exp_path):
             bd.build(bd.compile([os.path.join(base, f) for f in t["files"]], t["top"], [], [], ""))
             db = bd.save(os.path.join(td, "t.db"), {"top": t["top"], "files": "1", "errors": str(len(bd.errors))})
             an = Analyzer(db)
-            an.save(an.cdc(t.get("static", []), t.get("async_in", [])))
+            ai = list(t.get("async_in", []))
+            cons = None
+            if t.get("sdc"):
+                import sdccheck
+                cons = sdccheck.parse([os.path.join(base, f) for f in t["sdc"]])
+                ai += sdccheck.port_regex(sdccheck.async_inputs(cons), t["top"])
+            an.save(an.cdc(t.get("static", []), ai))
             got = collections.defaultdict(set)
             for dp, cls in db.execute("SELECT d.path, c.class FROM cdc c JOIN signal d ON d.id=c.dst"):
                 got[dp].add(cls)
@@ -1824,6 +1982,11 @@ def selftest(exp_path):
             for src, clk, cls, n in t.get("rdc", []):
                 if rgot.get((src, clk, cls)) != n:
                     ng.append(f"RDC が違う: {src} → {clk} {cls} = {rgot.get((src, clk, cls))}(期待 {n})")
+            if cons is not None:
+                st_ = sdccheck.check(db, cons, os.path.join(td, "sdc_check.md"))
+                for k_, v_ in t.get("sdc_expect", {}).items():
+                    if st_.get(k_) != v_:
+                        ng.append(f"制約の突き合わせが違う: {k_} = {st_.get(k_)}(期待 {v_})")
             dep = db.execute("SELECT max(depth) FROM instance").fetchone()[0]
             if t.get("depth") and dep != t["depth"]:
                 ng.append(f"階層の深さ {dep}(期待 {t['depth']})")
@@ -1847,6 +2010,8 @@ def main():
     a.add_argument("db"); a.add_argument("-o", "--out", default="out"); a.add_argument("--png", action="store_true")
     a.add_argument("--static", action="append", default=[], help="準静的な送り側(階層パスの正規表現)。動作中に変えない設定レジスタ")
     a.add_argument("--async-in", action="append", default=[], help="非同期の入力端子(階層パスの正規表現)。それぞれ別のドメインとして扱う")
+    a.add_argument("--sdc", action="append", default=[], help="タイミング制約(SDC / XDC)。RTL と突き合わせて sdc_check.md を出す。"
+                   "set_false_path -from の入力端子は非同期入力として扱う")
     a.add_argument("--gray", action="append", default=[], help="グレイコードの FF(階層パスの正規表現)。記述から読み取れない時だけ宣言する")
     i = sub.add_parser("iface")
     i.add_argument("db"); i.add_argument("--inst", required=True); i.add_argument("-o", "--out", default="iface.yaml")
@@ -1900,10 +2065,20 @@ def main():
         db = sqlite3.connect(g.db)
         t0 = time.time()
         an = Analyzer(db)
+        cons = None
+        if g.sdc:
+            import sdccheck
+            cons = sdccheck.parse(g.sdc)
+            top_ = db.execute("SELECT value FROM meta WHERE key='top'").fetchone()[0].split(",")[0].strip()
+            g.async_in = list(g.async_in) + sdccheck.port_regex(sdccheck.async_inputs(cons), top_)
         rows = an.cdc(g.static, g.async_in, g.gray)
         an.save(rows)
         agg, cn = report(db, g.out)
         p = cdc_map(db, g.out, agg, cn, g.png)
+        if cons is not None:
+            st_ = sdccheck.check(db, cons, os.path.join(g.out, "sdc_check.md"))
+            print(f"  制約の突き合わせ → sdc_check.md: 定義のないクロックの系 {st_['nodef']} / 制約のない組 {st_['noconst']} / "
+                  f"非同期と宣言して対策なし {st_['danger']} / 読めない行 {st_['unread']}")
         import cdcdiag
         bad = {"none", "wrong"}                           # 図は両方の形で出す。まず対策なし・誤りだけ、表は全部の重さも
         cdcdiag.hier(db, g.out, png=g.png, name="cdc_matrix", sevs=bad, style="matrix")
