@@ -95,7 +95,8 @@ class IfDiag:
                     self.warn.append(f"[束] {n['from']} と {n['to']} のプロトコルが違う({a.get('bus')} / {b.get('bus')})")
                 drv.setdefault(n["to"], []).append(n["from"])
         for k, v in drv.items():
-            if len(v) > 1 and self.port.get(k, {}).get("dir") != "inout":
+            pk = self.port.get(k, {})
+            if len(v) > 1 and pk.get("dir") != "inout" and not pk.get("merge"):   # merge: 論理でまとめて受ける端子(複数で正しい)
                 self.warn.append(f"[複数駆動] {k} を {', '.join(v)} が駆動")
         ci = self.center["instance"]
         for p in self.center.get("ports", []):
@@ -224,7 +225,7 @@ class IfDiag:
         for p in self.pboxes:
             p["x"] = self.cx - CH - p["w"] if p["side"] == "L" else self.cx + cw + CH
         self.W = self.cx + cw + (CH + rmax if rmax else 0) + 30
-        self.top = 60
+        self.top = 76                                 # 題(y=32)と「接続元・接続先」の見出しを離す
         ymin = min([p["y"] for p in self.pboxes] + [0])
         self.dy = self.top - ymin
         self.H = self.dy + max([self.ch] + [p["y"] + p["h"] for p in self.pboxes]) + 70
@@ -303,7 +304,8 @@ class IfDiag:
             lab = f"{bus}" + (f" {w}b" if w else "")
             o += (f'<text x="{f(mx)}" y="{f(my - 8)}" font-size="11" font-weight="800" fill="{col}" text-anchor="middle" '
                   f'paint-order="stroke" stroke="#fff" stroke-width="3">{esc(lab)}</text>')
-        elif w and int(w) > 1:
+        elif w and int(w) > 1 and (round(x2), round(y2)) not in self._wlab:
+            self._wlab.add((round(x2), round(y2)))        # 1 つの端子に集まる線は、幅の数字を 1 回だけ書く
             o += (f'<line x1="{f(mx - 5)}" y1="{f(my + 6)}" x2="{f(mx + 5)}" y2="{f(my - 6)}" stroke="{col}" stroke-width="1.6"/>'
                   f'<text x="{f(mx + 7)}" y="{f(my - 6)}" font-size="11" font-weight="800" fill="{col}" '
                   f'paint-order="stroke" stroke="#fff" stroke-width="3">{int(w)}</text>')
@@ -312,6 +314,7 @@ class IfDiag:
         return o
 
     def svg(self):
+        self._wlab = set()
         ci = self.center["instance"]
         dy = self.dy
         o = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {f(self.W)} {f(self.H)}" '
@@ -581,7 +584,7 @@ def main():
     svg = d.svg()
     ov = text_overlaps(svg)
     for t_ in ov:
-        d.warn.append(f"[重なり] 「{t_[0]}」と「{t_[1]}」")
+        d.warn.append(f"[重なり] {t_}")
     if a.cmd == "lint":
         print("lint:", "OK" if not d.warn else "")
         for w in d.warn:

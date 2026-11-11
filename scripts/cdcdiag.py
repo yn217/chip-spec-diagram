@@ -1018,10 +1018,12 @@ def main():
     d.add_argument("db"); d.add_argument("--dst", required=True); d.add_argument("-o", "--out", default="cdc_detail.yaml")
     g = ap.parse_args()
     db = sqlite3.connect(g.db)
+    if not db.execute("SELECT count(*) FROM clock").fetchone()[0]:
+        sys.exit("この DB はまだ解析していません。先に rtldb.py analyze を実行してください")
     if g.cmd == "hier":
         sv = set(g.sev.replace("bad", "none,wrong").split(",")) if g.sev else None
         for style in (["lines", "matrix"] if g.style == "both" else [g.style]):
-            name = g.name if style == "lines" else (g.name.replace("hier", "matrix") if "hier" in g.name else g.name + "_matrix")
+            name = g.name if (style == "lines" or g.style != "both") else (g.name.replace("hier", "matrix") if "hier" in g.name else g.name + "_matrix")
             p, st = hier(db, g.out, g.focus, g.rows, g.arcs, g.png, name, sv, g.gap, g.lane, not g.mono, not g.no_merge, style)
             print(f"生成: {p}(行 {st['rows']} / 乗り換えの組 {st['arcs']}" + (f" + 省略 {st['rest']}" if st["rest"] else "")
                   + f" / 階層の深さ {st['depth']})")

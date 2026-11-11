@@ -44,6 +44,7 @@ CREATE TABLE clock(id INTEGER PRIMARY KEY, root INTEGER, name TEXT,
 CREATE TABLE cdc(id INTEGER PRIMARY KEY, src INTEGER, dst INTEGER, src_clk INTEGER, dst_clk INTEGER,
                  class TEXT, stages INTEGER, logic INTEGER, width INTEGER,
                  via INTEGER);     -- via: 条件・ポインタを同期化している FF(1 段目)。handshake / gated / fifo / reconv
+CREATE TABLE diag(id INTEGER PRIMARY KEY, file TEXT, line INTEGER, msg TEXT);   -- slang のエラー
 CREATE TABLE rdc(id INTEGER PRIMARY KEY, src INTEGER, dst_clk INTEGER, class TEXT, n_ff INTEGER, example INTEGER);
 CREATE INDEX e_dst ON edge(dst); CREATE INDEX e_src ON edge(src); CREATE INDEX s_inst ON signal(inst);
 CREATE VIEW conn AS   -- 兄弟ブロック間・上位との接続(図を描く時の入口)
@@ -78,22 +79,46 @@ class Builder:
         self.insts, self.sig, self.sigs, self.edges, self.ffs = [], {}, [], [], {}
         self.bbconn = []
         self.grayfn = {}
+        self.gbits = {}                                   # 節点 → {ビット: ("bit" | "top", 元の式)}
         self.leaf, self.kids, self.nosplit, self.nhub, self.dim = {}, {}, False, 0, {}
         self.venc = {}                                    # 節点 → 代入の形(gray / pass / other)
         self.nwarn = collections.Counter()
+    multi_unit = False
+
+    def macro_first(self, files):
+        """マクロを定義するだけのファイル(`define があり、module / package / interface がない)を先頭に移す。
+        ファイル一覧の順で、使う側がマクロより前にあると「unknown macro」になり、その行の回路(マクロで書いた FF など)が抜けるため"""
+        head, rest = [], []
+        for f in files:
+            try:
+                t = open(f, encoding="utf-8", errors="ignore").read()
+            except OSError:
+                rest.append(f)
+                continue
+            body = re.sub(r"//[^\n]*|/\*.*?\*/", "", t, flags=re.S)
+            if "`define" in body and not re.search(r"^\s*(module|macromodule|package|interface|program)\b", body, re.M):
+                head.append(f)
+            else:
+                rest.append(f)
+        if head and files[:len(head)] != head:
+            self.moved = [os.path.basename(f) for f in head]
+        return head + rest
+
     def compile(self, files, top, incs, defs, extra=""):
         ps = self.ps
         d = ps.driver.Driver()
         d.addStandardArgs()
         cmd = ["slang", "--error-limit", "0", "--ignore-unknown-modules", "--allow-use-before-declare", "--relax-enum-conversions",
                "-Wnone"]
+        if not self.multi_unit:                          # 全ファイルを 1 つのコンパイル単位にし、マクロをファイルをまたいで効かせる
+            cmd += ["--single-unit"]                      # (`include を書き忘れたファイルでも、マクロで書いた FF が抜けない)
         if top:
             cmd += ["--top", top]
         for i in incs:
             cmd += ["-I", i]
         for x in defs:
             cmd += ["-D", x]
-        cmd += extra.split() + list(files)
+        cmd += extra.split() + self.macro_first(files)
         if not d.parseCommandLine(" ".join(cmd)) or not d.processOptions() or not d.parseAllSources():
             sys.exit("slang: ソースを読めない")
         self.comp = d.createCompilation()
@@ -442,6 +467,60 @@ class Builder:
         except Exception:
             return 0
     # ---- 文 ----
+    def concat_ranges(self, e, lv):
+        """e が連接 {a, b, …} で、相手 lv が 1 ビット要素の単純なベクタ 1 本なら → [(要素の式, 下の添字, 上の添字)]。違えば None"""
+        K = self.A.ExpressionKind
+        try:
+            while e.kind == K.Conversion and e.operand.type.bitWidth == e.type.bitWidth:
+                e = e.operand
+            if e.kind != K.Concatenation or len(e.operands) < 2 or self.nosplit or len(lv) != 1:
+                return None
+            b = lv[0][1]
+            dm = self.dim.get(b)
+            if not dm or not dm[2] or self.sigs[b]["is_mem"] or self.sigs[b]["width"] != dm[1]:
+                return None
+            if sum(o.type.bitWidth for o in e.operands) != dm[1]:
+                return None
+            out, lo = [], dm[0]
+            for o in reversed(list(e.operands)):
+                w = o.type.bitWidth
+                if w:
+                    out.append((o, lo, lo + w - 1))
+                    lo += w
+            return out
+        except Exception:
+            return None
+
+    def gray_bit(self, e):
+        """ビットごとに書いたグレイコード: g[i] = b[i] ^ b[i+1](定数の添字なら (節点, i, 元の式)、for 文の添字なら "loop")、
+        一番上のビット g[n] = b[n] は ("top", 節点, n, 元の式)。違えば None"""
+        K = self.A.ExpressionKind
+        try:
+            L, R = e.left, e.right
+            while R.kind == K.Conversion:
+                R = R.operand
+            if L.kind != K.ElementSelect:
+                return None
+            rl = self.chain(L.value)
+            lv = self.sub(rl[0], rl[1]) if rl and rl[2] is None else []
+            if len(lv) != 1:
+                return None
+            b, i = lv[0][1], self.const(L.selector)
+            sel = self.norm(L.selector)
+            if R.kind == K.ElementSelect and i is not None and self.const(R.selector) == i:
+                return ("top", b, i, self.norm(R.value))
+            if R.kind != K.BinaryOp or not str(R.op).endswith("BinaryXor"):
+                return None
+            for x, y in ((R.left, R.right), (R.right, R.left)):
+                if x.kind == K.ElementSelect and y.kind == K.ElementSelect and self.norm(x.value) == self.norm(y.value):
+                    if i is not None and self.const(x.selector) == i and self.const(y.selector) == i + 1:
+                        return ("bit", b, i, self.norm(x.value))
+                    if i is None and self.norm(x.selector) == sel and self.norm(y.selector) in (sel + "+1", "1+" + sel, f"({sel})+1"):
+                        return ("loop", b, None, self.norm(x.value))
+        except Exception:
+            pass
+        return None
+
     @staticmethod
     def norm(e):
         """式の文字列(空白と外側のかっこを除く)。同じ式かどうかの比較用"""
@@ -556,8 +635,11 @@ class Builder:
         d = self.plain(e.right) and not deps
         pr = self.pairs(self.whole(e.left), self.whole(e.right))      # 構造体どうし: メンバごとに 1 対 1
         self.emit(tg, rs, d, deps, pr, kind, conds, clk, arst, ln)
+        gb = self.gray_bit(e)
+        if gb and gb[0] in ("bit", "top"):                # ビットごとのグレイコード: 全ビットがそろったら parts() で印をつける
+            self.gbits.setdefault(gb[1], {})[gb[2]] = (gb[0], gb[3])
         if rs:                                            # 定数だけの代入(リセット値)は形を変えない
-            enc = "gray" if self.gray_expr(e.right) else "pass" if self.selonly(e.right) and not deps else "other"
+            enc = "gray" if self.gray_expr(e.right) or (gb and gb[0] == "loop") else "pass" if self.selonly(e.right) and not deps else "other"
             for t in set(tg):
                 self.setenc(t, enc)
 
@@ -757,6 +839,19 @@ class Builder:
         for lv, d, ex in conns:
             e = ex.left if ex.kind == A.ExpressionKind.Assignment else ex
             ln2 = self.line(e)
+            cr = self.concat_ranges(e, lv) if d in ("in", "out") else None
+            if cr:                                        # 端子に {a, b} をつないでいる: ビットの範囲ごとにつなぐ
+                for o_, lo_, hi_ in cr:
+                    k_ = self.kid(lv[0][1], lo_, hi_)
+                    if d == "in":
+                        self.fan([k_], self.refs(o_, []), "conn", "data", self.plain(o_), ln2)
+                    else:
+                        tg, dp = [], []
+                        self.lhs(o_, tg, dp)
+                        self.fan(tg, [k_], "conn", "data", 1, ln2)
+                if d == "in":
+                    self.setenc(lv[0][1], "other")
+                continue
             pr = self.pairs(lv, self.whole(e))            # 構造体の端子: メンバごとに 1 対 1
             if d in ("in", "inout"):
                 pl = self.plain(e)
@@ -831,7 +926,7 @@ class Builder:
                 continue
             sg = self.sigs[b]
             wr = [n for n in fin[b] if self.edges[n][1] != b]
-            W = bool(wr) or (sg["kind"] == "port" and sg["dir"] in ("in", "inout")) or b in self.bbpin
+            W = bool(wr) or (sg["kind"] == "port" and sg["dir"] in ("in", "inout") and sg["is_top"]) or b in self.bbpin
             KW = {rg: i for rg, i in kd.items() if fin[i]}
             for rg, i in kd.items():
                 if rg in KW:
@@ -861,6 +956,11 @@ class Builder:
             if KW:
                 self.cur = sg["inst"]
                 br = self.pseudo(sg["path"] + "$all", sg["name"], "all")
+                gb = self.gbits.get(b)
+                dm = self.dim.get(b)
+                if gb and dm and len({v[1] for v in gb.values()}) == 1 and gb.get(dm[0] + dm[1] - 1, ("",))[0] == "top" \
+                        and all(gb.get(k_, ("",))[0] == "bit" for k_ in range(dm[0], dm[0] + dm[1] - 1)):
+                    self.venc[br] = "gray"                # g[i] = b[i] ^ b[i+1] が全ビットそろっている
                 self.sigs[br].update(is_top=sg["is_top"], width=sg["width"], file=sg["file"], line=sg["line"])
                 kset = set(kd.values())
                 for n in fout[b]:                         # 全体を読んでいた辺は B$all から読む
@@ -879,6 +979,16 @@ class Builder:
         db = sqlite3.connect(path)
         db.executescript(SCHEMA)
         db.executemany("INSERT INTO meta VALUES(?,?)", list(meta.items()))
+        rows = []
+        if self.errors:
+            eng = self.ps.DiagnosticEngine(self.sm)
+            for x in self.errors:
+                try:
+                    f_, l_ = self.loc(x.location)
+                    rows.append((f_, l_, eng.formatMessage(x)))
+                except Exception:
+                    rows.append(("?", 0, str(x.code)))
+        db.executemany("INSERT INTO diag(file,line,msg) VALUES(?,?,?)", rows)
         db.executemany("INSERT INTO instance VALUES(?,?,?,?,?,?,?,?,?)",
                        [(i, x["path"], x["name"], x["module"], x["parent"], x["depth"], x["blackbox"], x["file"], x["line"])
                         for i, x in enumerate(self.insts)])
@@ -896,6 +1006,8 @@ class Analyzer:
         self.db = db
         self.S = {r[0]: dict(zip(("id", "path", "name", "inst", "width", "kind", "dir", "is_top", "is_mem"), r))
                   for r in db.execute("SELECT id,path,name,inst,width,kind,dir,is_top,is_mem FROM signal")}
+        if "enc" not in [r[1] for r in db.execute("PRAGMA table_info(signal)")]:
+            sys.exit("この DB は古い版の rtldb.py で作ったものです。rtldb.py build で作り直してください")
         self.enc = {r[0]: r[1] for r in db.execute("SELECT id,enc FROM signal WHERE enc IS NOT NULL")}
         self.fin = collections.defaultdict(list)      # dst -> [(src, kind, role, direct)]
         self.fout = collections.defaultdict(list)
@@ -1097,6 +1209,26 @@ class Analyzer:
                 ctrl = {t: v for t, v in ctrl.items() if t not in xd}
             return data, ctrl, xd, xc
 
+        def bitwise(ch):
+            """多ビットの同期化の鎖で、鎖の外からは 1 ビットの一部(part)としてしか読まれず、
+            読む側がどれも同じビット番号だけを使っているなら、エッジ検出の有無(True / False)。そうでなければ None"""
+            bits, stg = collections.defaultdict(set), collections.defaultdict(set)
+            for x in ch[1:]:
+                for d, k, r, di in self.fout[x]:
+                    if d in ch:
+                        continue
+                    sg = S[d]
+                    m = re.search(r"\[(\d+)\]$", sg["path"])
+                    if sg["kind"] != "part" or sg["width"] != 1 or not m:
+                        return None
+                    for y, k2, r2, d2 in self.fout[d]:
+                        if y not in ch:
+                            bits[y].add(int(m.group(1)))
+                            stg[y].add(x)
+            if not bits or any(len(v) != 1 for v in bits.values()):
+                return None
+            return any(len(v) > 1 for v in stg.values())
+
         def chain_of(f, data, xd, xc):
             """f が同期化の 1 段目なら、段の並び [f, 2 段目, ...]。違えば None"""
             if xc or len(data) != 1 or any(t in wmem for t in xd):
@@ -1237,7 +1369,8 @@ class Analyzer:
                 elif next(iter(xd)) in gray:
                     cls = "sync_gray"
                 else:
-                    cls = "sync_bus"
+                    bw = bitwise(ch)                      # 受け側が 1 ビットずつ別々に使っている: 1 ビットの同期化が並んでいるだけ
+                    cls = "sync_bus" if bw is None else ("sync_pulse" if bw else "sync")
             elif not xc and len(data) == 1 and not next(iter(data.values())):
                 cls = "data_enable" if same_ctrl else "no_sync"
             elif any(t in wmem for t in xd) and not xc:
@@ -1404,6 +1537,44 @@ def report(db, out):
                      + f" | `{short(scn)}` → `{short(dcn)}` | {f}:{ln} |")
         if len(rows) > 400:
             L.append(f"| …ほか {len(rows) - 400} 件 | | | | | | |")
+    # 同じ送り側の信号を、同じ受け側ドメインの別々の場所で同期化している(同期後の値が 1 サイクルずれうる)
+    dup = db.execute("""SELECT s.path, k.name, count(DISTINCT c.dst), group_concat(DISTINCT d.path)
+                        FROM cdc c JOIN signal s ON s.id=c.src JOIN signal d ON d.id=c.dst JOIN clock k ON k.id=c.dst_clk
+                        WHERE c.class IN ('sync','sync_gray','sync_pulse','sync_bus') GROUP BY c.src, c.dst_clk
+                        HAVING count(DISTINCT c.dst) >= 2 ORDER BY 3 DESC""").fetchall()
+    gd = collections.OrderedDict()                        # generate の添字だけが違うものは 1 行にまとめる
+    for sp, kn, n_, ds in dup:
+        k_ = (re.sub(r"\[\d+\]", "[*]", sp), kn, n_)
+        if k_ in gd:
+            gd[k_][3] += 1
+        else:
+            gd[k_] = [sp, kn, n_, 1, ds]
+    dup = list(gd.values())[:40]
+    if dup:
+        L += ["", "## 同じ信号を複数の場所で同期化", "",
+              "同じ送り側の信号を、同じ受け側ドメインの別々の同期化回路で受けています。同期後の値は 1 サイクルずれることがあるので、",
+              "受け側で合わせて使っていないか確かめてください(合わせていれば「再収束」にも出ます)。", "",
+              "| 送り側 | 受け側ドメイン | 同期化の数 | 同じ形 | 例 |", "|---|---|---|---|---|"]
+        for sp, kn, n_, m_, ds in dup:
+            L.append(f"| `{short(sp)}` | `{short(kn)}` | {n_} | {'×' + str(m_) if m_ > 1 else ''} | "
+                     + ", ".join(f"`{short(x)}`" for x in ds.split(",")[:3]) + " |")
+    if "diag" in [r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")]:
+        dg = db.execute("SELECT file, line, msg FROM diag").fetchall()
+        if dg:
+            used = {r[0] for r in db.execute("SELECT DISTINCT file FROM instance")}
+            kind = collections.Counter()
+            ex = {}
+            for f_, l_, m_ in dg:
+                k_ = re.sub(r"'[^']*'", "'…'", m_)
+                kind[(f_ in used, k_)] += 1
+                ex.setdefault((f_ in used, k_), f"{f_}:{l_}")
+            nu = sum(v for (u, _), v in kind.items() if u)
+            L += ["", "## slang のエラー", "",
+                  f"{len(dg)} 件。うち、使っている(インスタンスがある)ファイルの中のもの {nu} 件。"
+                  "使っていないファイルの中のエラーは結果に影響しない。使っているファイルの中のものは、その所の接続が欠けている可能性がある。", "",
+                  "| 使っているファイル | 内容 | 件数 | 例 |", "|---|---|---|---|"]
+            for (u, k_), v in sorted(kind.items(), key=lambda kv: (not kv[0][0], -kv[1]))[:30]:
+                L.append(f"| {'はい' if u else 'いいえ'} | {k_[:90]} | {v} | `{ex[(u, k_)]}` |")
     # 階層の深さ: 送り側から共通の親まで何段上がり、受け側まで何段下がるか
     par = {r[0]: (r[1], r[2]) for r in db.execute("SELECT id,parent,depth FROM instance")}
     def chain(i):
@@ -1419,6 +1590,19 @@ def report(db, out):
         hop[(par[si][1] - par[l][1]) + (par[di][1] - par[l][1])] += 1
         dmax[max(par[si][1], par[di][1])] += 1
     if hop:
+        # 同じ送り側を、同じ受け側ドメインで別々に同期化している所(受け側で値がずれる・合わせると再収束になる)
+        dup = db.execute("""SELECT s.path, k.name, count(DISTINCT c.dst), group_concat(DISTINCT d.path)
+                            FROM cdc c JOIN signal s ON s.id=c.src JOIN signal d ON d.id=c.dst JOIN clock k ON k.id=c.dst_clk
+                            WHERE c.class IN ('sync','sync_gray','sync_pulse') AND s.width = 1
+                            GROUP BY c.src, c.dst_clk HAVING count(DISTINCT c.dst) >= 2 ORDER BY 3 DESC LIMIT 50""").fetchall()
+        if dup:
+            L += ["", "## 同じ信号を複数の場所で同期化", "",
+                  "同じ送り側を、同じ受け側ドメインで別々の同期化回路で受けています。同期化回路ごとに 1 サイクルずれて届くことがあるので、"
+                  "受け側で合わせて使っていないか(再収束)を確かめてください。1 か所で同期化して配るのが基本です。"
+                  "送り側が 1 ビットのものだけを出しています(多ビットの FF はビットごとに別の信号のことがあるため)。", "",
+                  "| 送り側 | 受け側ドメイン | 同期化回路の数 | 同期化の 1 段目(最大 3 つ) |", "|---|---|---|---|"]
+            for sp, kn, n, dl in dup:
+                L.append(f"| `{short(sp)}` | `{short(kn)}` | {n} | " + "<br>".join(f"`{short(x)}`" for x in dl.split(",")[:3]) + " |")
         L += ["", "## 階層の深さ(乗り換えの両端)", "",
               f"インスタンスの深さは最大 {max(v[1] for v in par.values())} 段。端のある一番深い階層は {max(dmax)} 段。"
               f"送り側から共通の親まで上がり、受け側まで下がる段数の合計は最大 {max(hop)} 段。", "",
@@ -1495,11 +1679,14 @@ def iface_yaml(db, inst):
         sys.exit(f"インスタンス {inst} がない")
     cid, cname, cmod, par = r
     sig = {x[0]: x for x in db.execute("SELECT id,name,inst,width,kind,dir FROM signal")}
+    bypath = {p_: i_ for i_, p_ in db.execute("SELECT id,path FROM signal WHERE kind='port'")}
+    pathof = lambda i_: db.execute("SELECT path FROM signal WHERE id=?", (i_,)).fetchone()[0]
     iname = {x[0]: (x[1], x[2]) for x in db.execute("SELECT id,name,module FROM instance")}
     fin, fout = collections.defaultdict(list), collections.defaultdict(list)
-    for d, s in db.execute("SELECT dst,src FROM edge WHERE kind IN ('conn','comb')"):
-        fin[d].append(s); fout[s].append(d)
+    for d, s in db.execute("SELECT dst,src FROM edge WHERE kind IN ('conn','comb','seq') AND dst != src"):
+        fin[d].append(s); fout[s].append(d)                # seq も入れる: 上位の FF が受ける・出す端子も相手として出す
     ffset = {x[0] for x in db.execute("SELECT sig FROM ff")}
+    pname = iname[par][0] if par is not None else "-"
     def trace(p, adj):
         """上位の階層の配線だけをたどり、兄弟ブロックの端子・上位の端子・上位の論理に行き着く"""
         res, seen, st = set(), set(), list(adj[p])
@@ -1509,14 +1696,24 @@ def iface_yaml(db, inst):
                 continue
             seen.add(x)
             _, nm, ins, w, kind, d = sig[x]
+            if len(seen) > 20000:
+                break
             if ins == par and kind == "port":
-                res.add(("(上位)", iname[par][0], nm, x))
+                res.add(("(上位の端子)", pname, nm, x))
             elif ins != par and ins != cid:
                 res.add((iname[ins][1], iname[ins][0], nm, x))
             elif ins == par:
+                if kind == "part" and x not in ffset:     # 端子の一部(wb_adr_i[9:2])につながる: 一部の名前と幅で出す
+                    base = bypath.get(re.sub(r"\[[\d:]+\]$", "", pathof(x)))
+                    if base is not None and sig[base][2] == par:
+                        res.add(("(上位の端子)", pname, nm, x))
+                        continue
+                if kind in ("pseudo", "hub", "all", "part") and x not in ffset:
+                    st += adj[x]
+                    continue
                 nx = adj[x]
                 if x in ffset:
-                    res.add(("(上位の論理)", iname[par][0], nm, x))      # 上位の階層にある FF
+                    res.add(("(FF・論理)", "上位の論理", nm, x))      # 上位の階層にある FF(端子と名前がぶつからない別のブロックにする)
                 elif not nx:
                     res.add(("(未接続/定数)", "-", nm, x))
                 else:
@@ -1535,18 +1732,28 @@ def iface_yaml(db, inst):
         for side, adj, pd in (("left", fin, "out"), ("right", fout, "in")):
             if (d == "in" and side == "right") or (d == "out" and side == "left"):
                 continue
-            for mod, iname_, pn, x in sorted(trace(sidx, adj)):
-                if iname_ == "-":
-                    continue
+            hits = [h for h in sorted(trace(sidx, adj)) if h[1] != "-"]
+            lab = None
+            if side == "left" and len(hits) > 1:          # 上位の論理でまとめて受ける入力: 論理 1 本にし、元の信号は線の札に書く
+                srcs = sorted({h[2] for h in hits})
+                lab = "← " + ", ".join(srcs[:4]) + (f" ほか {len(srcs) - 4}" if len(srcs) > 4 else "")
+                hits = [("(FF・論理)", "上位の論理", f"{nm} の論理", hits[0][3])]
+            for mod, iname_, pn, x in hits:
                 key = (mod, iname_)
                 pe = peers[side].setdefault(key, {"module": mod, "instance": iname_, "ports": []})
                 if not any(q["name"] == pn for q in pe["ports"]):
                     q = {"name": pn, "dir": pd}
+                    if iname_ == "上位の論理" and pd == "in":
+                        q["merge"] = True                 # FF は複数の端子から受けてよい(データと条件)
                     if sig[x][3] > 1:
                         q["width"] = sig[x][3]
                     pe["ports"].append(q)
                 nets.append({"from": f"{iname_}.{pn}", "to": f"{cname}.{nm}"} if side == "left" else
                             {"from": f"{cname}.{nm}", "to": f"{iname_}.{pn}"})
+                if lab:
+                    nets[-1]["label"] = lab
+                    if w > 1:
+                        pe["ports"][-1]["width"] = w
     return {"interface": {"title": f"{cname}({cmod})の接続 — RTL の接続データベースから", "center": center,
                           "left": list(peers["left"].values()), "right": list(peers["right"].values()), "nets": nets}}
 
@@ -1635,6 +1842,7 @@ def main():
     b.add_argument("files", nargs="*"); b.add_argument("-o", "--out", default="design.db"); b.add_argument("--top")
     b.add_argument("-I", action="append", default=[]); b.add_argument("-D", action="append", default=[])
     b.add_argument("-f", action="append", default=[]); b.add_argument("--slang", default="")
+    b.add_argument("--multi-unit", action="store_true", help="ファイルごとに別のコンパイル単位にする(マクロがファイルをまたがない。既定は 1 つにまとめる)")
     a = sub.add_parser("analyze")
     a.add_argument("db"); a.add_argument("-o", "--out", default="out"); a.add_argument("--png", action="store_true")
     a.add_argument("--static", action="append", default=[], help="準静的な送り側(階層パスの正規表現)。動作中に変えない設定レジスタ")
@@ -1664,6 +1872,7 @@ def main():
                     files.append(ln if os.path.isabs(ln) or os.path.exists(ln) else os.path.join(base, ln))
         t0 = time.time()
         bd = Builder()
+        bd.multi_unit = g.multi_unit
         tops = bd.compile(files, g.top, g.I, g.D, g.slang)
         t1 = time.time()
         bd.build(tops)
@@ -1671,6 +1880,8 @@ def main():
                              "errors": str(len(bd.errors))})
         print(f"生成: {g.out}  インスタンス {len(bd.insts)} / 信号 {len(bd.sigs)} / 辺 {len(set(bd.edges))} / FF {len(bd.ffs)}"
               f"  (エラボレート {t1 - t0:.1f}s + 抽出 {time.time() - t1:.1f}s)")
+        if getattr(bd, "moved", None):
+            print(f"  マクロだけのファイルを先頭に移した: {', '.join(bd.moved[:6])}" + (" …" if len(bd.moved) > 6 else ""))
         if bd.errors:
             print(f"  slang のエラー {len(bd.errors)} 件(解析は続行。未定義のモジュールはブラックボックス)")
             eng = bd.ps.DiagnosticEngine(bd.sm)

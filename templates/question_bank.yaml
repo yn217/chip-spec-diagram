@@ -439,6 +439,54 @@ items:
     assume: 仮置きで進める
     priority: 33
     modes: [concept, rtl, mixed]
+  # ---- CDC(非同期箇所の図。diagrams/cdc/GUIDE.md)----
+  - id: cdc_async_in
+    category: CDC
+    q: 外から来る非同期の入力端子(ボタン・割り込み・別チップからの信号など)はどれですか？
+    free: true
+    options:
+      - {label: 名前で指定, description: 端子名の正規表現を入力(rtldb.py analyze --async-in)}
+      - {label: なし, description: 入力端子はすべて、どこかのクロックに同期している}
+      - {label: 未定, description: 宣言せずに進め、報告に「入力端子は未宣言」と書く}
+    effect: 非同期入力をそれぞれ別のドメインとして扱い、同期化の有無を検出する
+    assume: 未定
+    priority: 35
+    modes: [rtl, mixed]
+  - id: cdc_static
+    category: CDC
+    q: 動作中に変えない設定レジスタ・OTP の値はありますか？(cdc.md の「準静的な設定レジスタの候補」を見て答える)
+    free: true
+    options:
+      - {label: ある, description: 階層パスの正規表現と、変えないと言える理由を入力(--static)}
+      - {label: ない, description: すべて動作中に変わりうる信号として扱う}
+    effect: 宣言した送り側を「対策なし」から外し、準静的として表に残す(理由を決定事項に残す)
+    assume: ない
+    priority: 36
+    modes: [rtl, mixed]
+    depends_on: ["rtl=ある"]
+  - id: cdc_gray
+    category: CDC
+    q: 記述から読み取れないグレイコード(表を引く・別の書き方で作るなど)はありますか？
+    free: true
+    options:
+      - {label: ある, description: FF の階層パスの正規表現と理由を入力(--gray)}
+      - {label: ない, description: グレイコードは記述(X ^ (X >> 1) など)だけで判定する}
+    effect: 宣言した FF を多ビット同期化の「グレイコード」として扱う(名前では判定しない)
+    assume: ない
+    priority: 37
+    modes: [rtl, mixed]
+    depends_on: ["rtl=ある"]
+  - id: cdc_clock_relation
+    category: CDC
+    q: 分周クロック・切替クロックは元のクロックと同期とみなしてよいですか？
+    options:
+      - {label: 既定のまま, description: 分周は元と同期、切替は別ドメイン}
+      - {label: 切替も同期, description: 切替の前後で同じ源から来る(SDC で同期として扱う)}
+    effect: クロックドメインのまとめ方(CDC の検出範囲)
+    assume: 既定のまま
+    priority: 38
+    modes: [rtl, mixed]
+    depends_on: ["rtl=ある"]
   - id: dataflow_paths
     category: データフロー
     q: 検討したいデータの流れは？(どの辺のどの端子から入り、どの SRAM・演算器へ届くか、帯域)。PHY を置く辺と、主なブロックの大まかな位置は決まっていますか？

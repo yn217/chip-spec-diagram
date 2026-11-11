@@ -43,6 +43,20 @@ ITEMS = [
      ["floorplan.py", "floorplan.yaml", "--png"], "floorplan.png"),
     ("board", "ボード配置", "コネクタの位置からチップ IO の辺を決める",
      ["board.py", "board.yaml", "--png"], "board.png"),
+    # CDC は RTL → DB → 図 の順に複数のコマンドを流す({d} = 出力先)
+    ("cdc_matrix", "CDC 階層表", "送り側 × 受け側の表。赤いマスが対策忘れ・誤り(線を描かない)",
+     [["rtldb.py", "build", "rtl/cdc_deep.sv", "--top", "cdc_deep", "-o", "{d}/d.db"],
+      ["rtldb.py", "analyze", "{d}/d.db", "-o", "{d}/a"],
+      ["cdcdiag.py", "hier", "{d}/d.db", "-o", "{d}", "--png", "--style", "matrix", "--name", "cdc_matrix"]], "cdc_matrix.png"),
+    ("cdc_hier", "CDC 階層図", "階層 × クロックドメインに乗り換えの線",
+     [["rtldb.py", "build", "rtl/cdc_deep.sv", "--top", "cdc_deep", "-o", "{d}/d.db"],
+      ["rtldb.py", "analyze", "{d}/d.db", "-o", "{d}/a"],
+      ["cdcdiag.py", "hier", "{d}/d.db", "-o", "{d}", "--png", "--style", "lines"]], "cdc_hier.png"),
+    ("cdc_detail", "CDC 詳細図", "乗り換え 1 本の回路(非同期 FIFO のデータ)",
+     [["rtldb.py", "build", "rtl/cdc_deep.sv", "--top", "cdc_deep", "-o", "{d}/d.db"],
+      ["rtldb.py", "analyze", "{d}/d.db", "-o", "{d}/a"],
+      ["cdcdiag.py", "detail", "{d}/d.db", "--dst", "g_fifo\\.fq$", "-o", "{d}/x.yaml"],
+      ["gatediag.py", "render", "{d}/x.yaml", "-o", "{d}", "--png"]], "x.png"),
 ]
 OVERVIEW = ["bus_architecture", "memory_map", "storyboard", "block_interface", "clock_tree", "reset_tree",
             "gate_pipeline", "dataflow_floorplan", "latency_step", "cpu_cache_multiport", "floorplan", "board"]
@@ -73,8 +87,15 @@ def make(width):
     done = {}
     for name, title, sub, cmd, fn in ITEMS:
         d = os.path.join(tmp, name)
-        args = [PY, os.path.join(HERE, cmd[0])] + cmd[1:] + ["-o", d]
-        r = subprocess.run(args, cwd=EX, capture_output=True, text=True)
+        os.makedirs(d, exist_ok=True)
+        if isinstance(cmd[0], list):                      # 複数のコマンドを順に
+            for c in cmd:
+                r = subprocess.run([PY, os.path.join(HERE, c[0])] + [a.replace("{d}", d) for a in c[1:]], cwd=EX, capture_output=True, text=True)
+                if r.returncode:
+                    break
+        else:
+            args = [PY, os.path.join(HERE, cmd[0])] + cmd[1:] + ["-o", d]
+            r = subprocess.run(args, cwd=EX, capture_output=True, text=True)
         src = os.path.join(d, fn)
         if not os.path.exists(src):
             print(f"  失敗: {name}\n{r.stdout[-400:]}{r.stderr[-400:]}")

@@ -7,6 +7,10 @@ module sync2 #(parameter W = 1) (input clk, input rst_n, input [W-1:0] d, output
   assign q = s2;
 endmodule
 
+module buf2 (input [1:0] i, output [1:0] o);                          // 2 ビットのバッファ(中はそのまま渡す)
+  assign o = i;
+endmodule
+
 // 非同期 FIFO(グレイコードのポインタを両向きに同期化。データはメモリから直接読む)
 module afifo (input wclk, input rclk, input [7:0] wdata, input wr, input rd, output [7:0] rdata, output full, output empty);
   reg [7:0] storage [0:3];
@@ -179,5 +183,30 @@ module cdc_cases (
   always @(posedge clk_a) a_fake_gray <= a_fake_gray + 8'd1;
   wire [7:0] b_fake_gray;
   sync2 #(8) u_fake_gray (.clk(clk_b), .rst_n(rst_n), .d(a_fake_gray), .q(b_fake_gray));
-  always @(posedge clk_b) o_new <= k_ok ^ k_l ^ b_cap ^ b_enc ^ b_fake_gray ^ {7'h0, b_pulse ^ irq_q ^ ck_smp ^ b_both ^ b_inv ^ b_two0};
+  // 24. ビットごとに書いたグレイコード(generate で g[i] = b[i] ^ b[i+1]、一番上は b のまま)   → 同期化あり(グレイコード)
+  reg [3:0] a_bin2, a_gq;
+  wire [3:0] a_gb;
+  genvar gi;
+  generate for (gi = 0; gi < 3; gi = gi + 1) begin : g_gb
+    assign a_gb[gi] = a_bin2[gi] ^ a_bin2[gi + 1];
+  end endgenerate
+  assign a_gb[3] = a_bin2[3];
+  always @(posedge clk_a) begin a_bin2 <= a_bin2 + 4'd1; a_gq <= a_gb; end
+  wire [3:0] b_gq;
+  sync2 #(4) u_gbit (.clk(clk_b), .rst_n(rst_n), .d(a_gq), .q(b_gq));
+
+  // 25. 端子に連接 {x, y} をつないだバッファを通して、1 ビットずつ同期化(ビットの範囲を端子の中まで追う)  → 同期化あり
+  reg a_p, a_q;
+  always @(posedge clk_a) begin a_p <= din[1]; a_q <= din[2]; end
+  wire w_p, w_q;
+  buf2 u_buf2 (.i({a_p, a_q}), .o({w_p, w_q}));
+  wire b_p;
+  sync2 u_cat (.clk(clk_b), .rst_n(rst_n), .d(w_p), .q(b_p));
+  // 26. 2 ビットのレジスタに独立したトグル 2 本。受け側は 1 ビットずつエッジ検出(verilog-ethernet の形)  → 同期化 + エッジ検出
+  reg [1:0] t2_1, t2_2, t2_3, t2_4;
+  always @(posedge clk_a) t2_1 <= t2_1 ^ {din[6], din[5]};
+  always @(posedge clk_b) begin t2_2 <= t2_1; t2_3 <= t2_2; t2_4 <= t2_3; end
+  wire ev0 = t2_3[0] ^ t2_4[0];
+  wire ev1 = t2_3[1] ^ t2_4[1];
+  always @(posedge clk_b) o_new <= k_ok ^ k_l ^ b_cap ^ b_enc ^ b_fake_gray ^ {4'h0, b_gq} ^ {6'h0, ev1, b_pulse ^ irq_q ^ ck_smp ^ b_both ^ b_inv ^ b_two0 ^ b_p ^ ev0};
 endmodule
