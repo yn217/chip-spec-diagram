@@ -77,7 +77,8 @@ def tail(p, n=2):
 
 
 # ================= CDC 階層図 =================
-def hier(db, out, focus=None, max_rows=36, max_arcs=28, png=False, name="cdc_hier", sevs=None):
+def hier(db, out, focus=None, max_rows=36, max_arcs=28, png=False, name="cdc_hier", sevs=None, gap=14, lane=34):
+    """gap = 同じ行に出入りする線どうしの間隔(px)、lane = 縦の幹線どうしの間隔(px)。広げると追いやすく、図は大きくなる"""
     top = db.execute("SELECT value FROM meta WHERE key='top'").fetchone()[0]
     I = {r[0]: dict(id=r[0], path=r[1], name=r[2], module=r[3], parent=r[4], depth=r[5])
          for r in db.execute("SELECT id,path,name,module,parent,depth FROM instance")}
@@ -253,7 +254,8 @@ def hier(db, out, focus=None, max_rows=36, max_arcs=28, png=False, name="cdc_hie
         else:
             lanes.append([(t["lo"], t["hi"])]); t["lane"] = len(lanes) - 1
     # 線の端: 行ごとに、幹線の根元(1 本)と枝(線 1 本ごと)を並べる。通路の内側の順に、上から下・左から右へ階段状に置く
-    STEP = 7.0
+    STEP = float(gap)
+    SG = max(8.0, STEP * 0.75)                            # 同じ行の中の線どうしの間隔
     stubs = collections.defaultdict(list)                 # 行 → [(通路, 番号, 幹線, 線 or None)]
     for t in trunks:
         stubs[t["row"]].append((t["lane"], 0, t, None))
@@ -277,11 +279,11 @@ def hier(db, out, focus=None, max_rows=36, max_arcs=28, png=False, name="cdc_hie
         for _, _, t, a in lst:
             if a is None:
                 t["lab"] = numlist([m["no"] for m in t["mem"]])
-                t["gx"], t["gw"] = xo, (16 if len(t["mem"]) == 1 else max(18, wlen(t["lab"]) * 5.6 + 10))
-                xo += t["gw"] + 3
+                t["gx"], t["gw"] = xo, (16 if len(t["mem"]) == 1 else max(20, wlen(t["lab"]) * 6.2 + 12))
+                xo += t["gw"] + 8
             else:
                 a["gx"] = xo
-                xo += 19
+                xo += 26
         G = max(G, xo + 8)
     # 行の高さ: 出入りする線が多い行だけ高くし、線を STEP 刻みで離す
     selfn = collections.defaultdict(lambda: [0, 0])       # 同じ行の中の線: 右向き・左向きの本数
@@ -291,7 +293,8 @@ def hier(db, out, focus=None, max_rows=36, max_arcs=28, png=False, name="cdc_hie
                 selfn[a["rs"]][0 if col[dc] > col[sc] else 1] += 1
     yy = Y0
     for n in range(len(R)):
-        RHr[n] = max(RH, (len(stubs[n]) if n in stubs else 0) * STEP + 14, 2 * (4.5 + 6 * (max(selfn[n]) - 1)) + 16 if n in selfn else 0)
+        RHr[n] = max(RH, (len(stubs[n]) if n in stubs else 0) * STEP + 18,
+                     2 * (SG / 2 + 1 + SG * (max(selfn[n]) - 1)) + 20 if n in selfn else 0)
         YT[n], RY[n] = yy, yy + RHr[n] / 2
         yy += RHr[n]
     YB = yy                                               # 行の下端
@@ -302,7 +305,7 @@ def hier(db, out, focus=None, max_rows=36, max_arcs=28, png=False, name="cdc_hie
                 t["y"] = y
             else:
                 a["ym"] = y
-    LW = 22
+    LW = float(lane)
     XLN = XA + G                                          # 通路の左端
     XL = XLN + max(len(lanes), 1) * LW + 34               # 一覧の左端
     LISTW = 700
@@ -390,6 +393,7 @@ def hier(db, out, focus=None, max_rows=36, max_arcs=28, png=False, name="cdc_hie
         return (f'<path d="{d}" fill="none" stroke="#fff" stroke-width="5.5" class="{cls}"/>'
                 f'<path d="{d}" fill="none" stroke="{c}" {st} class="{cls}"/>')
     marks = []                                            # 番号(線・マスより上に描く)
+    BR = 7.6 if STEP >= 12 else 6.8
     selfk = collections.defaultdict(lambda: [0, 0])
     for a in sorted(arcs, key=lambda a: -order[a["sev"]]):
         if a["rs"] != a["rd"]:
@@ -400,14 +404,14 @@ def hier(db, out, focus=None, max_rows=36, max_arcs=28, png=False, name="cdc_hie
             right = col[dc] > col[sc]
             kk = selfk[a["rs"]][0 if right else 1]
             selfk[a["rs"]][0 if right else 1] += 1
-            y = ry(a["rs"]) + (-4.5 - 6 * kk if right else 4.5 + 6 * kk)
+            y = ry(a["rs"]) + (-(SG / 2 + 1) - SG * kk if right else SG / 2 + 1 + SG * kk)
             xs = px(sc) + 2 if right else px(sc) - PW - 2
             xd = px(dc) - PW - 8 if right else px(dc) + 8
             o.append(seg(f"M{xs:.1f},{y:.1f} H{xd:.1f}", c, st, cls))
             o.append(f'<path d="M{xd + (7 if right else -7):.1f},{y:.1f} l{-8 if right else 8},-4.5 v9 z" fill="{c}" class="{cls}"/>')
             o.append(f'<circle cx="{xs:.1f}" cy="{y:.1f}" r="3.2" fill="{c}" stroke="#fff" stroke-width="1" class="{cls}"/>')
             if k == 0:                                    # 番号は線の上。同じ行の線どうしで重ならないよう横にずらす
-                marks.append(f'<g class="{cls}">' + badge((xd - 14 - 18 * kk if right else xd + 14 + 18 * kk), y, a, 6.8) + '</g>')
+                marks.append(f'<g class="{cls}">' + badge((xd - 14 - 20 * kk if right else xd + 14 + 20 * kk), y, a, BR) + '</g>')
 
     def src_end(scs, y, lx, c, st, cls):                  # 送り側: 一番左のマスから幹線へ。関係するマスごとに ●
         o.append(seg(f"M{px(scs[0]) + 2:.1f},{y:.1f} H{lx:.1f}", c, st, cls))
@@ -431,7 +435,7 @@ def hier(db, out, focus=None, max_rows=36, max_arcs=28, png=False, name="cdc_hie
                 src_end(bycol(sc for sc, _ in a["pairs"]), a["ym"], lx, c, st, cls)
             else:
                 dst_end(bycol(dc for _, dc in a["pairs"]), a["ym"], lx, c, st, cls)
-            marks.append(f'<g class="{cls}">' + badge(XA + a["gx"] + 9, a["ym"], a, 6.8) + '</g>')       # 枝の端の番号
+            marks.append(f'<g class="{cls}">' + badge(XA + a["gx"] + 10, a["ym"], a, BR) + '</g>')       # 枝の端の番号
         if t["kind"] == "d":
             dst_end(bycol(dc for a in t["mem"] for _, dc in a["pairs"]), t["y"], lx, c, st, tcls)
         else:
@@ -442,12 +446,12 @@ def hier(db, out, focus=None, max_rows=36, max_arcs=28, png=False, name="cdc_hie
             for a in t["mem"]:
                 o.append(f'<circle cx="{lx:.1f}" cy="{a["ym"]:.1f}" r="2.8" fill="{c}" class="ln m{a["no"]}"/>')      # 分岐・合流の点
             # 幹線の根元: 束ねた線の番号をまとめて書く
-            marks.append(f'<g class="{tcls}"><rect x="{XA + t["gx"]:.1f}" y="{t["y"] - 6.8:.1f}" width="{t["gw"]:.1f}" height="13.6" rx="6.8" '
-                         f'fill="#fff" stroke="{c}" stroke-width="1.4"/><text x="{XA + t["gx"] + t["gw"] / 2:.1f}" y="{t["y"] + 3.3:.1f}" '
-                         f'font-size="9" font-weight="800" fill="{c}" text-anchor="middle">{esc(t["lab"])}</text></g>')
+            marks.append(f'<g class="{tcls}"><rect x="{XA + t["gx"]:.1f}" y="{t["y"] - 7.5:.1f}" width="{t["gw"]:.1f}" height="15" rx="7.5" '
+                         f'fill="#fff" stroke="{c}" stroke-width="1.4"/><text x="{XA + t["gx"] + t["gw"] / 2:.1f}" y="{t["y"] + 3.5:.1f}" '
+                         f'font-size="10" font-weight="800" fill="{c}" text-anchor="middle">{esc(t["lab"])}</text></g>')
         else:
             a = t["mem"][0]
-            marks.append(f'<g class="ln m{a["no"]} h{a["no"]}">' + badge(XA + t["gx"] + 8, t["y"], a, 6.8) + '</g>')
+            marks.append(f'<g class="ln m{a["no"]} h{a["no"]}">' + badge(XA + t["gx"] + 8, t["y"], a, BR) + '</g>')
     # マス
     for (r, d), n in cell.items():
         cx = XC + col[d] * CW + CW / 2
@@ -724,13 +728,16 @@ def main():
     h.add_argument("db"); h.add_argument("-o", "--out", default="out"); h.add_argument("--png", action="store_true")
     h.add_argument("--focus"); h.add_argument("--rows", type=int, default=36); h.add_argument("--arcs", type=int, default=28)
     h.add_argument("--name", default="cdc_hier")
+    h.add_argument("--gap", type=int, default=14, help="同じ行に出入りする線どうしの間隔(px)。既定 14")
+    h.add_argument("--lane", type=int, default=34, help="縦の幹線どうしの間隔(px)。既定 34")
     h.add_argument("--sev", help="線にする重さ(none,wrong,review,ok,info をカンマ区切り。bad = none,wrong)。既定は全部(重い順に --arcs 本まで)")
     d = sub.add_parser("detail")
     d.add_argument("db"); d.add_argument("--dst", required=True); d.add_argument("-o", "--out", default="cdc_detail.yaml")
     g = ap.parse_args()
     db = sqlite3.connect(g.db)
     if g.cmd == "hier":
-        p, st = hier(db, g.out, g.focus, g.rows, g.arcs, g.png, g.name, set(g.sev.replace("bad", "none,wrong").split(",")) if g.sev else None)
+        p, st = hier(db, g.out, g.focus, g.rows, g.arcs, g.png, g.name, set(g.sev.replace("bad", "none,wrong").split(",")) if g.sev else None,
+                     g.gap, g.lane)
         print(f"生成: {p}(行 {st['rows']} / 線 {st['arcs']}" + (f" + 省略 {st['rest']}" if st["rest"] else "") + f" / 階層の深さ {st['depth']})")
     else:
         import yaml
