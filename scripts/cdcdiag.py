@@ -19,6 +19,9 @@ from rtldb import OK_CLASSES, INFO, REVIEW, BAD, NONE, WRONG, CLASS_JA
 GRAY = "#64748b"
 SEV = {"none": ("#dc2626", "対策なし"), "wrong": ("#b91c1c", "対策の誤り"), "review": ("#d97706", "要確認"), "ok": ("#15803d", "対策あり"),
        "info": ("#64748b", "準静的")}
+# 隣り合う線を見分けるための色の違い(同じ重さの中で 3 色)。重さは線の種類と番号の形で示すので、色の違いに意味はない
+TONES = {"none": ["#dc2626", "#7f1d1d", "#db2777"], "wrong": ["#dc2626", "#7f1d1d", "#db2777"],
+         "review": ["#d97706", "#854d0e", "#ca8a04"], "ok": ["#15803d", "#0f766e", "#65a30d"], "info": ["#64748b", "#334155", "#94a3b8"]}
 ORDER = {"none": 0, "wrong": 1, "review": 2, "ok": 3, "info": 4}
 STROKE = {"none": 'stroke-width="2.4"', "wrong": 'stroke-width="2" stroke-dasharray="12 3 2 3"',
           "review": 'stroke-width="1.8" stroke-dasharray="7 3"', "ok": 'stroke-width="1.2"', "info": 'stroke-width="1.2" stroke-dasharray="2 3"'}
@@ -37,6 +40,7 @@ LEG_ITEMS = {"none": "対策なし(同期化が見つからない・条件やポ
 LEG_TEXT = ["読み方: ●(送り側のマス)から右の通路へ出て、▶(受け側のマス)に入る。",
             "線の両端(マスの列のすぐ右)に同じ番号がある。線をたどらなくても、同じ番号を探せば相手の行がわかる(束ねた幹線の根元には番号をまとめて書く)。",
             "線が交わる所は白い縁で上下を分け、つながる所だけに丸を打つ。",
+            "隣り合う線は色を変えてある(赤・えんじ・ピンクなど)。色の違いは見分けるためだけで、重さは線の種類(実線・一点鎖線・破線・細線)と番号の形で見る。",
             "マス = その行(と、下の行に出していない下位)にある、その列のドメインの FF 数。太枠のマスが乗り換えの端。",
             "行は乗り換えの端がある枝だけ。", "子が 1 つだけの中間の階層は 1 行にまとめ(…(n 階層)…)、同じモジュールの兄弟 4 つ以上は 1 行(×n)、",
             "行が多い時は深い所をたたむ(▸ 下位 n 段を含む)。", "線の多い行は高くする。",
@@ -77,7 +81,7 @@ def tail(p, n=2):
 
 
 # ================= CDC 階層図 =================
-def hier(db, out, focus=None, max_rows=36, max_arcs=28, png=False, name="cdc_hier", sevs=None, gap=14, lane=34):
+def hier(db, out, focus=None, max_rows=36, max_arcs=28, png=False, name="cdc_hier", sevs=None, gap=14, lane=34, tones=True):
     """gap = 同じ行に出入りする線どうしの間隔(px)、lane = 縦の幹線どうしの間隔(px)。広げると追いやすく、図は大きくなる"""
     top = db.execute("SELECT value FROM meta WHERE key='top'").fetchone()[0]
     I = {r[0]: dict(id=r[0], path=r[1], name=r[2], module=r[3], parent=r[4], depth=r[5])
@@ -285,6 +289,30 @@ def hier(db, out, focus=None, max_rows=36, max_arcs=28, png=False, name="cdc_hie
                 a["gx"] = xo
                 xo += 26
         G = max(G, xo + 8)
+    # 色: 同じ行で隣り合う線、隣の通路の幹線とは違う色にする(同じ重さの色の中から、まだ使っていないものを選ぶ)
+    adj = collections.defaultdict(set)
+    for r, lst in stubs.items():
+        for (_, _, t1, _), (_, _, t2, _) in zip(lst, lst[1:]):
+            if t1 is not t2:
+                adj[id(t1)].add(id(t2)); adj[id(t2)].add(id(t1))
+    for t1 in trunks:
+        for t2 in trunks:
+            if t1 is not t2 and abs(t1["lane"] - t2["lane"]) == 1 and t1["lo"] <= t2["hi"] and t2["lo"] <= t1["hi"]:
+                adj[id(t1)].add(id(t2))
+    tone = {}
+    for t in sorted(trunks, key=lambda t: (t["lane"], t["lo"])):
+        fam = TONES[t["sev"]] if tones else [SEV[t["sev"]][0]]
+        used = collections.Counter(tone[x] for x in adj[id(t)] if x in tone)
+        t["c"] = min(fam, key=lambda c: (used[c], fam.index(c)))
+        tone[id(t)] = t["c"]
+        for a in t["mem"]:
+            a["c"] = t["c"]
+    nself = collections.Counter()
+    for a in arcs:
+        if a["rs"] == a["rd"]:                            # 同じ行の中の線: 行の中で順に色を変える
+            fam = TONES[a["sev"]] if tones else [SEV[a["sev"]][0]]
+            a["c"] = fam[nself[a["rs"]] % len(fam)]
+            nself[a["rs"]] += 1
     # 行の高さ: 出入りする線が多い行だけ高くし、線を STEP 刻みで離す
     selfn = collections.defaultdict(lambda: [0, 0])       # 同じ行の中の線: 右向き・左向きの本数
     for a in arcs:
@@ -377,7 +405,7 @@ def hier(db, out, focus=None, max_rows=36, max_arcs=28, png=False, name="cdc_hie
     PW = 52
     px = lambda d: XC + col[d] * CW + CW / 2 + PW / 2      # マスの右端
     def badge(x, y, a, r=8.2):
-        c = SEV[a["sev"]][0]
+        c = a["c"]
         fs = 10 if r >= 8 else 9
         if a["sev"] == "wrong":                           # 対策の誤り: 四角
             return (f'<rect x="{x - r:.1f}" y="{y - r:.1f}" width="{2 * r}" height="{2 * r}" rx="2.5" fill="{c}" stroke="#fff" stroke-width="1.2"/>'
@@ -398,7 +426,7 @@ def hier(db, out, focus=None, max_rows=36, max_arcs=28, png=False, name="cdc_hie
     for a in sorted(arcs, key=lambda a: -order[a["sev"]]):
         if a["rs"] != a["rd"]:
             continue
-        c, st = SEV[a["sev"]][0], STROKE[a["sev"]]         # 同じ行の中: マスからマスへまっすぐ(右向きは上、左向きは下に 6px 刻み)
+        c, st = a["c"], STROKE[a["sev"]]                   # 同じ行の中: マスからマスへまっすぐ(右向きは上、左向きは下に 6px 刻み)
         cls = f'ln m{a["no"]} h{a["no"]}'
         for k, (sc, dc) in enumerate(a["pairs"]):
             right = col[dc] > col[sc]
@@ -424,7 +452,7 @@ def hier(db, out, focus=None, max_rows=36, max_arcs=28, png=False, name="cdc_hie
             o.append(f'<path d="M{px(d) + 1:.1f},{y:.1f} l8,-4.5 v9 z" fill="{c}" class="{cls}"/>')
     bycol = lambda ds: sorted(set(ds), key=lambda d: col[d])
     for t in sorted(trunks, key=lambda t: -order[t["sev"]]):
-        c, st = SEV[t["sev"]][0], STROKE[t["sev"]]
+        c, st = t["c"], STROKE[t["sev"]]
         lx = XLN + t["lane"] * LW + LW / 2
         tcls = "ln " + " ".join(f'm{a["no"]}' for a in t["mem"])       # 幹線: 束ねた線のどれを選んでも残す
         if len(t["mem"]) == 1:
@@ -730,6 +758,7 @@ def main():
     h.add_argument("--name", default="cdc_hier")
     h.add_argument("--gap", type=int, default=14, help="同じ行に出入りする線どうしの間隔(px)。既定 14")
     h.add_argument("--lane", type=int, default=34, help="縦の幹線どうしの間隔(px)。既定 34")
+    h.add_argument("--mono", action="store_true", help="隣り合う線の色を変えない(重さごとに 1 色)")
     h.add_argument("--sev", help="線にする重さ(none,wrong,review,ok,info をカンマ区切り。bad = none,wrong)。既定は全部(重い順に --arcs 本まで)")
     d = sub.add_parser("detail")
     d.add_argument("db"); d.add_argument("--dst", required=True); d.add_argument("-o", "--out", default="cdc_detail.yaml")
@@ -737,7 +766,7 @@ def main():
     db = sqlite3.connect(g.db)
     if g.cmd == "hier":
         p, st = hier(db, g.out, g.focus, g.rows, g.arcs, g.png, g.name, set(g.sev.replace("bad", "none,wrong").split(",")) if g.sev else None,
-                     g.gap, g.lane)
+                     g.gap, g.lane, not g.mono)
         print(f"生成: {p}(行 {st['rows']} / 線 {st['arcs']}" + (f" + 省略 {st['rest']}" if st["rest"] else "") + f" / 階層の深さ {st['depth']})")
     else:
         import yaml
