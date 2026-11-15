@@ -5,7 +5,7 @@
   python3 aichip.py lint   model.yaml
 
 1 つのモデル(model.yaml)から、同じ配置のまま次を作る。図を描き分けない(読む人が混乱しないように):
-  arch_overview.svg        全体図(データの流れ重視)。積層は 1 枚に重ねる(上の層 = 色つきの枠 + 斜線 + 「L2」の札、層をまたぐ接続 = ⊠)
+  arch_overview.svg        全体図(データの流れ重視)。積層は 1 枚に重ねる(上の層 = 色つきの実線の枠 + 塗りつぶした札、層をまたぐ接続 = ⊠)
   arch_layer_<層>.svg      層ごとの図(物理配置を見る時)。ほかの層は薄い枠だけ
   arch_layer_<層>_design.svg  その層を回路面から見た向き(設計データの向き)。全体図と左右が反転する層にだけ出す
   arch_scene_<id>.svg      動作説明。全体図と同じ配置で、登場しない所を薄くし、登場する線に番号を振る。下に動作の表
@@ -406,6 +406,14 @@ class Layout:
                 p, ms = along(r["pts"], 0.5), 5 + A.lw(l) * 0.6
                 r["viapt"] = (p[0], p[1], ms)
                 self.boxes.append(((p[0] - ms - 1, p[1] - ms - 1, p[0] + ms + 1, p[1] + ms + 1), ("l", lid), "⊠", True))
+        self.panel = {}                                   # 上の層のブロック: 文字と中身を載せる面(重ねて描く時、下の層の上に塗る)
+        if not A.schem:
+            for b in A.blocks.values():
+                if A.die[b["die"]]["idx"] and not A.small(b):
+                    bs = [bx for bx, ow_, t_, _ in self.boxes if ow_ == ("b", b["id"])]
+                    dx, dy, dw, dh = self.drect[b["id"]]
+                    self.panel[b["id"]] = (max(min(q[0] for q in bs) - 5, dx + 3), max(min(q[1] for q in bs) - 4, dy + 3),
+                                           min(max(q[2] for q in bs) + 5, dx + dw - 3), min(max(q[3] for q in bs) + 4, dy + dh - 3))
         self.place_vias()
         self.place_labels()
 
@@ -626,9 +634,9 @@ class Layout:
                 ix, iy = (x + ins + 4 if right else x + w - ins - 26), y + ins + 4
                 self.icons.append((b["id"], shape, ix, iy))
                 self.boxes.append(((ix, iy, ix + 22, iy + 18), ("b", b["id"]), "□", True))
-            if k:                                         # 上の層: 枠の角に「L2」の札(文字のない側の角)
-                tx = x + w - ins - 17 if (right or A.schem) else x + ins + 1
-                ty = y + ins + 1 if anc[0] == "b" else y + h - ins - 11
+            if k:                                         # 上の層: 名前の横に「L2」の札
+                nb = next(bx for bx, ow_, t_, _ in self.boxes if ow_ == ("b", b["id"]))
+                tx, ty = (nb[0] - 20 if right else nb[2] + 4), nb[1] + 0.5
                 self.tabs.append((b["id"], tx, ty))
                 self.boxes.append(((tx, ty, tx + 16, ty + 10), ("b", b["id"]), "□", True))
             ins_ = b.get("inside")
@@ -1220,8 +1228,9 @@ def body_svg(A, L, mode):
                       f'stroke="{DIMS if dm else ACC if act else bc}" stroke-width="{2.6 if act else 1}"/>')
             continue
         fill = DIMF if dm else FIFO_FILL if shape == "fifo" else KFILL.get(b["kind"], KFILL["misc"])
-        if k and not die_only and not small and not A.schem:      # 重ねて描く時: 下の層の色を消さないよう、斜線だけ
-            fill = "none" if dm else f'url(#ht_{b["kind"] if b["kind"] in KHATCH else "misc"})'
+        over = bool(k and not die_only and not small and not A.schem)
+        if over:                                          # 重ねて描く時: 範囲は層の色の実線の枠だけ(塗らない・斜線を引かない)。文字と中身は下の「札」に載せる
+            fill = "none"
         sw = 2.4 if act else (1.9 if k else 1.3) if not small else (1.4 if k else 0.9)
         sc_ = DIMS if dm else ACC if act else MEMC if (b["kind"] == "mem" and not k) else col if (k or not small) else "#94a3b8"
         if shape == "mux":
@@ -1232,6 +1241,10 @@ def body_svg(A, L, mode):
                       f'stroke="{sc_}" stroke-width="{sw}"/>')
         if shape == "reg":                                # レジスタ: 下の辺にクロックの三角
             b_.append(f'<path d="M{f(x + w - 17)},{f(y + h)} l4.5,-7 l4.5,7" fill="none" stroke="{sc_}" stroke-width="1.1"/>')
+        if over and b["id"] in L.panel:                   # 上の層の札: 種類の色で塗った面(SRAM は橙)+ 層の色の縁
+            p0, p1, p2, p3 = L.panel[b["id"]]
+            b_.append(f'<rect x="{f(p0)}" y="{f(p1)}" width="{f(p2 - p0)}" height="{f(p3 - p1)}" rx="3" fill="{DIMF if dm else KFILL.get(b["kind"], KFILL["misc"])}" '
+                      f'stroke="{DIMS if dm else col}" stroke-width="1.1"/>')
     for bid, nm, tx, ty, anc in L.pinlab:                 # 端子の名前
         if not hidden_die(A.blocks[bid]["die"]):
             b_.append(f'<text x="{f(tx)}" y="{f(ty)}" font-size="6.2" fill="{DIMT if dimb(bid) else "#475569"}" text-anchor="{anc}">{esc(nm)}</text>')
@@ -1468,7 +1481,7 @@ def draw(A, L, mode, title, out, png=False):
             frame = f"{cn}の地・{cn}の線" if d["idx"] else "地の色なし・黒の線"
             st = "この層にある回路"
         else:
-            frame = f"{cn}の枠 + 斜線 + 「{d['id']}」の札" if d["idx"] else f"{cn}の枠"
+            frame = f"{cn}の枠 + {cn}の縁の札" if d["idx"] else f"{cn}の枠"
             st = "表(回路面)から見ている = 設計データと同じ向き" if not mx and not my else "180°回した向き(鏡像ではない)" if mx and my else \
                  f"裏から透かして見ている = 設計データと{'左右' if mx else '上下'}が反転"
         h_.append(f'<text x="10" y="{f(51.5 + 12.5 * k)}" font-size="9" fill="{DIMT if hidden_die(d["id"]) else col}"><tspan font-weight="700">'
@@ -1591,8 +1604,8 @@ def draw(A, L, mode, title, out, png=False):
                  "箱の中の小さい字 = 端子の名前。記号の名前は記号の上(上から線が入る記号は下)。",
                  "層: 上の層にある回路は薄い色の地の上に、その層の色の線で描く。⊠ = 層をまたぐ接続。帯域とクロック周波数は arch の表と全体図に書く。"]
     elif nd > 1:
-        notes.append("積層: 同じ位置に重ねて描く。上の層は色つきの枠 + 斜線(斜線の色 = 種類。橙 = SRAM)+ 層の名前の札。文字は 1 層目が左上、2 層目が右下。"
-                     "⊠ = 層をまたぐ接続(大きさ = ビット幅)。")
+        notes.append("積層: 同じ位置に重ねて描く。上の層のブロック = 層の色の実線の枠(範囲)+ 同じ色で縁取った札(名前・諸元・中身。札の色 = 種類。橙 = SRAM)。"
+                     "1 層目の文字と中身は上・中、上の層の札は下に置き、重ねない。⊠ = 層をまたぐ接続(大きさ = ビット幅)。")
     t3 = ""
     if any(A.isbus(b) for b in A.blocks.values()):
         t3 += "帯 = バス(紺 = データ、灰 = 管理)。ブロックは短い矢印でバスにつながる。黄の札 = ポート(プロトコル)。薄い色の枠 = サブシステム。"

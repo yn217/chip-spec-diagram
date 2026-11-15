@@ -44,7 +44,7 @@ blocks:
      info: ["乗算器 256 個(INT8)", "作業 SRAM 2MB", "ピーク 2TOPS"],
      inside_flow: false, inside: ["fifo:入力", "mem:作業SRAM|2MB", "演算器 3 種|切り替え", "結果|レジスタ", "fifo:出力"]}
   - {id: post, die: L1, at: [2, 7, 8, 1], name: 集約・後処理, kind: compute, clock: clk_core, info: ["部分和の加算/最大・TopK・量子化", "出力 256b"],
-     inside_at: [0.33, 0.61], inside_y: 0.44, inside_flow: false, inside: ["加算器 ×4|256b", "比較器ツリー|最大・TopK 64", "mem:指数 LUT|ROM 4K 語", "除算器|FP16", "丸め・飽和|INT8"]}
+     inside_at: [0.33, 0.57], inside_y: 0.44, inside_flow: false, inside: ["加算器 ×4|256b", "比較器ツリー|最大・TopK 64", "mem:指数 LUT|ROM 4K 語", "除算器|FP16", "丸め・飽和|INT8"]}
   - {id: boot, die: L1, at: [11, 1, 1, 1], name: ブート ROM, kind: ctrl, clock: clk_csr, info: ["ROM 64KB", "eFuse 4Kbit"]}
   - {id: link_ctl, die: L1, at: [10, 1, 1, 4], name: リンク制御, kind: io, clock: clk_link, info: ["スケールアウト", "8 レーン結束"],
      inside_dir: v, inside_flow: false, inside: ["fifo:非同期 core⇔link", "パケット化|ヘッダ 64b", "フロー制御|クレジット", "レーン結束|デスキュー"]}
