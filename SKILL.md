@@ -56,7 +56,7 @@ description: 半導体チップの仕様書に載せる図を作るハーネス�
 | クロック系統図(源→PLL→MUX→分周→ゲート→ドメイン、CDC と比率同期) | 使える | `diagrams/clock-tree/GUIDE.md` | `clocktree.py` |
 | データフロー検討図(フロアプラン風: 辺の端子 → PHY → バス → SRAM・演算器、距離・帯域) | 使える | `diagrams/dataflow-floorplan/GUIDE.md` | `dataflowfp.py` |
 | RTL の接続データベース(接続図の元・クロックドメインと CDC / RDC の検出・経路の表示・自己確認) | 使える | `reference/rtldb.md` | `rtldb.py` |
-| AI チップのアーキテクチャ図(SoC ではない演算タイル + メモリ + 高速 I/O。積層あり。1 つのモデルから全体図・層ごとの図・動作説明・切り出しを同じ配置で作る。帯域・ビット幅・クロックを省かず密に描く。Face-up / Face-down と視点を明示) | 試作(使える) | `diagrams/ai-chip-architecture/GUIDE.md` | `aichip.py` |
+| AI チップのアーキテクチャ図(SoC ではない演算タイル + メモリ + 高速 I/O。積層あり。1 つのモデルから全体図・層ごとの図・動作説明(動作の表・コマ割り)・切り出し・別図(BIST・クロック)を同じ配置で作る。ブロックの中は回路図ふうの別図(セレクタ・レジスタ・演算器・SRAM・端子・分岐)。帯域・ビット幅・クロックを省かず密に描く。Face-up / Face-down と視点を明示) | 試作(使える) | `diagrams/ai-chip-architecture/GUIDE.md` | `aichip.py` |
 | CDC 階層表・CDC 階層図・CDC 詳細図(非同期対策の忘れを見つける: 送り側 × 受け側の表と、階層 × クロックドメインに乗り換えの線の両方を出す。1 本ずつの回路。GUIDE の「作業手順」をそのまま実行する) | 使える | `diagrams/cdc/GUIDE.md` | `cdcdiag.py` |
 | フロアプラン・ボード配置 | 使える | `diagrams/bus-architecture/GUIDE.md` の G4 | `floorplan.py` `board.py` |
 | リセット系統図(源→OR→同期化→ドメイン、解除シーケンス、RDC) | 使える | `diagrams/reset-tree/GUIDE.md` | `resettree.py` |
