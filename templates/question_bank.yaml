@@ -619,6 +619,62 @@ items:
     modes: [concept, rtl, mixed]
     depends_on: ["floorplan=作る"]
 
+  # ---- AI チップのアーキテクチャ図(積層)----
+  - id: aichip_stack
+    category: AI チップ
+    q: "ダイは何枚重ねますか？下(基板側)から順に、名前と回路面の向き(Face-up / Face-down)を教えてください。"
+    free: true
+    options:
+      - {label: 1 枚(積層なし), description: 層の表現は使わない}
+      - {label: 2 枚 F2F, description: 下 = 回路面 上、上 = 回路面 下(ハイブリッドボンディング)}
+      - {label: 2 枚 F2B, description: 下 = 回路面 下(フリップチップ)、上 = 回路面 下(TSV でつなぐ)}
+    effect: "stack(層の順・face)。上の帯の「表から / 裏から」と断面、原点の印と F の字"
+    assume: "1 枚(積層なし)"
+    priority: 12
+    modes: [concept, mixed]
+  - id: aichip_view
+    category: AI チップ
+    q: "全体図はどちらから見た図にしますか？"
+    options:
+      - {label: 上面(放熱側)から透視, description: パッケージを上から見た向き。回路面が下の層は設計データと左右が反転して見える}
+      - {label: 下面(バンプ側)から透視, description: 基板側から見た向き}
+    effect: "view。座標は上面から見た向きで書き、下面の図は左右を反転して描く"
+    assume: "上面(放熱側)から透視"
+    priority: 13
+    modes: [concept, mixed]
+  - id: aichip_flip
+    category: AI チップ
+    q: "回路面が下の層は、どの軸で裏返して貼りますか？(設計データの原点がどの角に来るか)"
+    options:
+      - {label: 縦軸まわり, description: 左右が反転(原点が右下に来る)}
+      - {label: 横軸まわり, description: 上下が反転(原点が左上に来る)}
+    effect: "stack の flip。原点の印の位置と、設計データの向きの図"
+    assume: "縦軸まわり"
+    priority: 14
+    modes: [concept, mixed]
+  - id: aichip_links
+    category: AI チップ
+    q: "ブロック間の接続ごとに、ビット幅とクロック(直列ならレーン数と速度)はわかりますか？"
+    options:
+      - {label: わかる, description: 一覧をもらう(幅 × クロックから帯域を計算する)}
+      - {label: 帯域だけわかる, description: 帯域から幅を仮置きし、仮置きと書く}
+      - {label: まだ, description: "主要な経路だけ仮置きし、lint の [情報] を残す"}
+    effect: "links の width / clock / lanes / rate。図の線のラベルと太さ"
+    assume: "まだ"
+    priority: 22
+    modes: [concept, mixed]
+  - id: aichip_scenes
+    category: AI チップ
+    q: "図で説明したい動作は何ですか？(例: 重みのロード、推論 1 回、スケールアウト)"
+    free: true
+    options:
+      - {label: 全体図だけ, description: 動作説明は作らない}
+      - {label: 動作を挙げる, description: 動作ごとに、全体図と同じ配置で登場する所だけを濃くした図を作る}
+    effect: "scenes(手順と登場する接続)、crops(切り出し)"
+    assume: "全体図だけ"
+    priority: 36
+    modes: [concept, mixed]
+
   # ---- 出力 ----
   - id: output
     category: 出力

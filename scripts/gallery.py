@@ -44,6 +44,10 @@ ITEMS = [
     ("board", "ボード配置", "コネクタの位置からチップ IO の辺を決める",
      ["board.py", "board.yaml", "--png"], "board.png"),
     # CDC は RTL → DB → 図 の順に複数のコマンドを流す({d} = 出力先)
+    ("aichip_overview", "AI チップの全体図", "積層を 1 枚に重ねる。帯域・ビット幅・クロックを省かない",
+     ["aichip.py", "render", "aichip/infer_accel.yaml", "--png"], "arch_overview.png"),
+    ("aichip_scene", "AI チップの動作説明", "全体図と同じ配置で、登場しない所を薄く",
+     ["aichip.py", "render", "aichip/infer_accel.yaml", "--png"], "arch_scene_infer.png"),
     ("cdc_matrix", "CDC 階層表", "送り側 × 受け側の表。赤いマスが対策忘れ・誤り(線を描かない)",
      [["rtldb.py", "build", "rtl/cdc_deep.sv", "--top", "cdc_deep", "-o", "{d}/d.db"],
       ["rtldb.py", "analyze", "{d}/d.db", "-o", "{d}/a"],

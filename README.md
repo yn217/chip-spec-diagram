@@ -20,6 +20,7 @@
 | ゲートレベル図 | `diagrams/gate-level/GUIDE.md` |
 | データフロー検討図 | `diagrams/dataflow-floorplan/GUIDE.md` |
 | CDC 階層表・CDC 階層図・CDC 詳細図(非同期箇所) | `diagrams/cdc/GUIDE.md` |
+| AI チップのアーキテクチャ図(積層・Face-up/down。同じ配置で全体図・層ごと・動作説明・切り出し) | `diagrams/ai-chip-architecture/GUIDE.md` |
 | フロアプラン・ボード配置 | `diagrams/bus-architecture/GUIDE.md`(G4) |
 
 ### バス構成図(製品規模)
@@ -154,6 +155,24 @@ ICG とイネーブル付きレジスタ。クロック・リセットの配線�
 
 <img src="docs/gallery/dataflow_fp_npu_soc.png" alt="データフロー検討図" width="820">
 
+### AI チップのアーキテクチャ図(積層あり)
+SoC ではない AI 向けチップ(演算タイル + メモリ + 高速 I/O)の全体像。1 つのモデルから、同じ配置のまま 4 種類の図を作る。
+すき間を作らず敷き詰め、ブロックにクロック周波数・諸元、線に ビット幅×クロック=帯域 を書く(字は小さい。拡大して読む)。
+
+**全体図**(積層は 1 枚に重ねる。実線の枠 = 1 層目、破線の枠 = 2 層目、⊠ = 層をまたぐ接続。上の帯に視点・各層の向き・断面)
+
+<img src="docs/gallery/aichip_overview.png" alt="AI チップの全体図" width="820">
+
+**動作説明**(全体図と同じ配置で、登場しない所を薄く)
+
+<img src="docs/gallery/aichip_scene.png" alt="動作説明" width="820">
+
+**切り出し**(全体図の一部を拡大。どこかを示す地図つき)と **層ごとの図**(回路面が下の層を、設計データの向きで)
+
+<img src="docs/gallery/aichip_crop.png" alt="切り出し" width="820">
+
+<img src="docs/gallery/aichip_layer_design.png" alt="層ごとの図(設計データの向き)" width="820">
+
 ### CDC 階層表・CDC 階層図(非同期箇所)
 RTL から作ったデータベースを元に、クロックの乗り換えを階層の上に示す。目的は非同期対策を忘れている所を見つけること。
 同じ内容を 2 つの形で両方出す。下は階層 9 段の確認用 RTL(`examples/rtl/cdc_deep.sv`)。
@@ -201,6 +220,7 @@ RTL から作ったデータベースを元に、クロックの乗り換えを�
 | `gallery.py` | サンプルから全種類の図を今の描き方で描き直す(`docs/gallery/regen/` に出す。README の図の差し替え用) |
 | `rtldb.py` | RTL の接続を SQLite のデータベースにする(slang でエラボレート)。クロックドメイン・非同期の乗り換え(CDC 15 分類。対策忘れの検出が主目的)・リセットの乗り換え(RDC)の検出、経路の表示(`path`)、答え付きの自己確認(`selftest`)、接続図用 YAML の出力。OpenTitan top_earlgrey(51.5 万行・階層 11 段)で確認。方式は `reference/rtldb.md` |
 | `sdccheck.py` | タイミング制約(SDC / XDC)と RTL のクロック・乗り換えの突き合わせ(`rtldb.py analyze --sdc` から呼ぶ)。非同期と宣言した組の対策忘れを見つける |
+| `aichip.py` | AI チップのアーキテクチャ図(積層あり)。全体図・層ごとの図・動作説明・切り出し・表を 1 つのモデルから |
 | `cdcdiag.py` | CDC 階層表(送り側 × 受け側の表。線を描かない)、CDC 階層図(階層 × クロックドメインに乗り換えの線)、CDC 詳細図(乗り換え 1 本の回路 → `gatediag.py`) |
 | `storyboard.py` | 動作説明のストーリーボード(構成図を使い回し、ステップごとのコマを 1 枚に並べる) |
 | `ifdiag.py` | ブロック間の接続図(YAML または RTL から。AXI/APB の束ね、lint、SVG/PNG/draw.io) |
