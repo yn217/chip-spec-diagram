@@ -675,17 +675,23 @@ items:
     priority: 36
     modes: [concept, mixed]
 
-    - id: aichip_small
-    topic: AI チップの図
+  - id: aichip_small
+    category: AI チップ
     q: "全体図で名前だけの小さい箱にするブロックはどれですか(クロック・電源・温度・BIST 以外にありますか)。全体図に描かず別図にする線はどれですか"
+    free: true
     effect: "small_kinds と focus が決まる。別図 arch_focus_<種類> が増える"
     assume: "小さい箱 = クロック・電源・テスト。全体図に描く線 = データと制御(I2C・SPI・CSR を含む)。BIST とクロックの接続は別図"
+    priority: 37
+    modes: [concept, mixed]
   - id: aichip_detail
-    topic: AI チップの図
+    category: AI チップ
     q: "中の回路まで描くブロックはどれですか。その回路の、メモリ・レジスタ・演算器・セレクタと、信号の名前・ビット幅を教えてください"
+    free: true
     effect: "details(回路図ふうの別図)が決まる。動作の表とコマ割りの元になる"
     assume: "中の回路は描かない(全体図のブロックの中に、回路の要素を小さい箱で並べるだけ)"
-# ---- 出力 ----
+    priority: 38
+    modes: [concept, mixed]
+  # ---- 出力 ----
   - id: output
     category: 出力
     q: 仕様書にはどの形式で入れますか？
