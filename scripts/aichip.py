@@ -31,6 +31,8 @@ from chipdiag import esc, wlen, INK, to_png, hz, load, FONT, text_box, fifo_cell
 
 GRAY = "#64748b"
 CW, CH, CHS, G, PAD = 118, 78, 24, 32, 6     # マスの幅・高さ、小さい箱だけの行の高さ、すき間、外の余白
+CHB, BUSH = 38, 32                           # バスの帯だけの行の高さ、帯の太さ
+TABC = "#fbbf24"                             # ポートの札
 BEND = 46
 KFILL = {"compute": "#dbeafe", "mem": "#ffedd5", "io": "#dcfce7", "clk": "#fef9c3", "ctrl": "#ede9fe", "pwr": "#fee2e2",
          "reg": "#ccfbf1", "test": "#f1f5f9", "misc": "#f1f5f9"}
@@ -238,7 +240,7 @@ class Arch:
         if self.schem:                                    # 回路の図: 細めの線。太さの差は控えめに
             return min(3.6, max(0.9, 0.8 + 0.35 * math.log2(max(l.get("width") or 1, 8) / 8)))
         w = l.get("width") or (l.get("lanes", 0) * 32) or 32
-        return min(6.5, max(1.0, 0.9 + 0.75 * math.log2(max(w, 32) / 32)))
+        return min(10, max(1.2, 1.2 + 1.1 * math.log2(max(w, 32) / 32)))
 
     def check(self):
         L, C, R = self.lint, self.C, self.R
@@ -263,7 +265,8 @@ class Arch:
         self.own = own
         for d in self.dies:
             dc, dr, dw, dh = d["at"]
-            emp = [(x, y) for y in range(dr, dr + dh) for x in range(dc, dc + dw) if (x, y) not in own[d["id"]]]
+            free = {(x, y) for c, r, w, h in d.get("free", []) for x in range(c, c + w) for y in range(r, r + h)}
+            emp = [(x, y) for y in range(dr, dr + dh) for x in range(dc, dc + dw) if (x, y) not in own[d["id"]] and (x, y) not in free]
             if emp and not self.schem:
                 L.append(f"[空き] 層 {d['id']}: {dw * dh} マス中 {len(emp)} マスが空いている "
                          f"({', '.join(f'[{x},{y}]' for x, y in emp[:6])}{' …' if len(emp) > 6 else ''})。詰めるか、何があるかを書く")
@@ -307,6 +310,16 @@ class Arch:
             for x in cr.get("blocks", []):
                 if x not in self.blocks:
                     L.append(f"[切り出し] {cr['id']}: ブロック {x} がない")
+        self.groups = []                                  # サブシステムの枠: (名前, 色, [ブロック])
+        for g in self.s.get("groups", []):
+            ms = [bid for bid in self.blocks for pat in g.get("blocks", []) if fnmatch.fnmatchcase(bid, pat)]
+            if not ms:
+                L.append(f"[配置] グループ {g.get('name')}: 当てはまるブロックがない")
+            else:
+                self.groups.append((g.get("name", ""), g.get("color", "#64748b"), ms))
+
+    def isbus(self, b):
+        return b.get("shape") == "bus" and not self.schem
 
     def state(self, d, fx=False, fy=False):
         """層 d が、モデルの座標(上面から見た向き)を (fx, fy) だけ反転した図でどう見えるか → (左右反転, 上下反転)"""
@@ -326,14 +339,15 @@ class Layout:
         self.A, self.fx, self.fy = A, fx, fy
         C, R = A.C, A.R
         self.cells = {b["id"]: self.flip(b["at"]) for b in A.blocks.values()}
-        rowsmall, has = [True] * R, [False] * R            # 小さい箱だけの行は低くする
+        rowsmall, has, rowbus = [True] * R, [False] * R, [False] * R   # 小さい箱だけ・バスの帯だけの行は低くする
         for b in A.blocks.values():
             c, r, w, h = self.cells[b["id"]]
             for y in range(r, r + h):
                 has[y] = True
-                if not A.small(b) or h > 1:
+                if not (A.small(b) or (A.isbus(b) and w >= h)) or h > 1:
                     rowsmall[y] = False
-        self.rh = [CHS if (rowsmall[j] and has[j]) else CH for j in range(R)]
+                rowbus[y] = rowbus[y] or A.isbus(b)
+        self.rh = [(CHB if rowbus[j] else CHS) if (rowsmall[j] and has[j]) else CH for j in range(R)]
         self.cw = [CW] * C
         if A.schem:                                       # 回路の図: 列の幅・行の高さは、そこに置く記号と文字で決める
             self.cw, self.rh = [40] * C, [40] * R
@@ -371,7 +385,13 @@ class Layout:
         self.ext[None] = [0, 0, C, R]
         self.texts, self.boxes, self.over = [], [], []
         self.route, self.via, self.sq, self.inner, self.lines, self.tabs, self.icons = {}, {}, [], [], [], [], []
-        self.pinlab, self.dots = [], []
+        self.pinlab, self.dots, self.grect = [], [], []
+        for nm, col, ms in A.groups:                      # サブシステムの枠(題つき)
+            rs = [self.rect[m] for m in ms]
+            x0, y0 = min(r[0] for r in rs) - 11, min(r[1] for r in rs) - 11
+            x1, y1 = max(r[0] + r[2] for r in rs) + 11, max(r[1] + r[3] for r in rs) + 11
+            self.grect.append((nm, col, x0, y0, x1, y1))
+            self.boxes.append(((x0 + 5, y0 + 1, x0 + 9 + tw(nm, 8, True), y0 + 10.5), ("g", nm), "□", True))
         if A.schem:
             self.place_symbols()
         else:
@@ -558,7 +578,7 @@ class Layout:
             right = anc[1] == "r"
             if A.small(b):                                # 名前だけの小さい箱
                 nm, fs = b["name"], 8.5
-                if h <= 30:                               # 低い行: マスいっぱい
+                if h <= 36:                               # 低い行: マスいっぱい
                     dx, dy, dw, dh = x + ins, y, w - 2 * ins, h
                 else:                                     # ふつうの行: 角に小さく置く
                     dw, dh = min(w - 2 * ins, tw(nm, fs, True) + 14), 20
@@ -567,6 +587,13 @@ class Layout:
                 nm = wrap(nm, max(4, int((dw - 10) / (fs * 0.6))))[0]
                 self.drect[b["id"]] = (dx, dy, dw, dh)
                 self.text(dx + 5, dy + dh / 2 + fs * .36, nm, fs, "start", role="name", owner=("b", b["id"]), bold=True, tight=b.get("tight", False))
+                continue
+            if A.isbus(b):                                # バス = 帯。名前は帯の中に白い字で 1 行
+                hz_ = w >= h
+                self.drect[b["id"]] = (x, y + h / 2 - BUSH / 2, w, BUSH) if hz_ else (x + w / 2 - BUSH / 2, y, BUSH, h)
+                ck = b.get("clock")
+                t = "   ".join([b["name"]] + [" / ".join(b.get("info", []))] * bool(b.get("info")) + ([f"{ck} {A.clk[ck].get('freq', '')}"] if ck in A.clk else []))
+                self.text(x + w / 2 + (0 if hz_ else 3.6), y + h / 2 + (3.6 if hz_ else 0), t, 10, "middle", rot=not hz_, role="bus", owner=("b", b["id"]), bold=True)
                 continue
             self.drect[b["id"]] = (x + ins, y + ins, w - 2 * ins, h - 2 * ins)
             shape = b.get("shape")
@@ -1056,7 +1083,7 @@ class Layout:
         """中が空いている 1 層目のブロック(3 マス以上で、文字と中身の箱が面積の 7% 未満)"""
         out = []
         for b in self.A.blocks.values():
-            if self.A.schem or self.A.die[b["die"]]["idx"] != 0 or b["at"][2] * b["at"][3] < 3 or self.A.small(b) or b.get("shape") == "mux":
+            if self.A.schem or self.A.die[b["die"]]["idx"] != 0 or b["at"][2] * b["at"][3] < 3 or self.A.small(b) or b.get("shape") in ("mux", "bus"):
                 continue
             x, y, w, h = self.rect[b["id"]]
             used = sum((bx[2] - bx[0]) * (bx[3] - bx[1]) for bx, ow, t, _ in self.boxes
@@ -1137,6 +1164,10 @@ def body_svg(A, L, mode):
     diml = lambda lid: actl is not None and lid not in actl
     hidden_die = lambda d: die_only is not None and d != die_only
     b_ = []
+    for nm, col, x0, y0, x1, y1 in L.grect:               # サブシステムの枠: 薄い色の地 + 題
+        b_.append(f'<rect x="{f(x0)}" y="{f(y0)}" width="{f(x1 - x0)}" height="{f(y1 - y0)}" rx="7" fill="{col}" fill-opacity=".09" '
+                  f'stroke="{col}" stroke-opacity=".45" stroke-width="1"/>'
+                  f'<text x="{f(x0 + 7)}" y="{f(y0 + 9)}" font-size="8" font-weight="800" fill="{col}">{esc(nm)}</text>')
     # 層の範囲・原点の印
     for d in A.dies:
         c, r, w, h = L.ext[d["id"]]
@@ -1156,8 +1187,9 @@ def body_svg(A, L, mode):
             continue
         if d["idx"]:                                      # 上の層の範囲: 外形の線の上に札
             t = f'{d["id"]} {d["name"]} の範囲'
-            b_.append(f'<rect x="{f(x - e + 12)}" y="{f(y - e - 6)}" width="{f(tw(t, 8, True) + 10)}" height="12" rx="2" fill="{col}"/>'
-                      f'<text x="{f(x - e + 17)}" y="{f(y - e + 3)}" font-size="8" font-weight="700" fill="#fff">{esc(t)}</text>')
+            tx_ = x + pw + e - 22 - tw(t, 8, True)        # 外形の右上(左上はサブシステムの題)
+            b_.append(f'<rect x="{f(tx_)}" y="{f(y - e - 6)}" width="{f(tw(t, 8, True) + 10)}" height="12" rx="2" fill="{col}"/>'
+                      f'<text x="{f(tx_ + 5)}" y="{f(y - e + 3)}" font-size="8" font-weight="700" fill="#fff">{esc(t)}</text>')
         mx, my = A.state(d, L.fx, L.fy)
         ox, oy = (x + pw + e if mx else x - e), (y - e if my else y + ph + e)
         sx, sy = (-1 if mx else 1), (-1 if my else 1)
@@ -1182,6 +1214,11 @@ def body_svg(A, L, mode):
             continue
         small = A.small(b)
         shape = None if small else b.get("shape")
+        if shape == "bus":                                # バスの帯(色 = 線の種類の色)
+            bc = LCOL.get(b.get("bus", "data"), LCOL["data"])
+            b_.append(f'<rect x="{f(x)}" y="{f(y)}" width="{f(w)}" height="{f(h)}" rx="4" fill="{DIMF if dm else bc}" '
+                      f'stroke="{DIMS if dm else ACC if act else bc}" stroke-width="{2.6 if act else 1}"/>')
+            continue
         fill = DIMF if dm else FIFO_FILL if shape == "fifo" else KFILL.get(b["kind"], KFILL["misc"])
         if k and not die_only and not small and not A.schem:      # 重ねて描く時: 下の層の色を消さないよう、斜線だけ
             fill = "none" if dm else f'url(#ht_{b["kind"] if b["kind"] in KHATCH else "misc"})'
@@ -1273,9 +1310,19 @@ def body_svg(A, L, mode):
             dx, dy = ex - qx, ey - qy
             n = max(math.hypot(dx, dy), 1e-6)
             ux, uy = dx / n, dy / n
-            hw = max(2.2, sw * .5 + 1.8) if A.schem else max(2.6, sw * .5 + 2.2)
+            hw = max(2.2, sw * .5 + 1.8) if A.schem else max(2.8, sw * .85 + 1.8)
             o.append(f'<path d="M{f(ex)},{f(ey)} L{f(ex - ux * a - uy * hw)},{f(ey - uy * a + ux * hw)} '
                      f'L{f(ex - ux * a + uy * hw)},{f(ey - uy * a - ux * hw)} z" fill="{col}"/>')
+        if l.get("tab"):                                  # ポートの札(プロトコル・ポート名)。バスの帯の縁の内側に置く(帯の中央は名前の行)
+            ends = [(pts[0], pts[1], l["from"]), (pts[-1], pts[-2], l["to"])]
+            for (ex, ey), (qx, qy), _ in [e for e in ends if A.isbus(A.blocks[e[2]])]:
+                n = max(math.hypot(ex - qx, ey - qy), 1e-6)
+                ux, uy = (ex - qx) / n, (ey - qy) / n     # 帯の中へ向かう向き
+                tw_ = max(20, tw(l["tab"], 6.6, True) + 7)
+                cx_, cy_ = ex + ux * (tw_ / 2 + .5 if abs(ux) > .5 else 0), ey + uy * (5.2 if abs(uy) > .5 else 0)
+                o.append(f'<rect x="{f(cx_ - tw_ / 2)}" y="{f(cy_ - 4.7)}" width="{f(tw_)}" height="9.4" rx="1.5" fill="{DIMF if dm else TABC}" '
+                         f'stroke="{DIMS if dm else "#b45309"}" stroke-width="0.8"/><text x="{f(cx_)}" y="{f(cy_ + 2.4)}" font-size="6.6" '
+                         f'font-weight="700" fill="{DIMT if dm else "#422006"}" text-anchor="middle">{esc(l["tab"])}</text>')
         if l.get("mux"):                                  # セレクタ(行き先の手前に台形)
             (ex, ey), (qx, qy) = pts[-1], pts[-2]
             n = max(math.hypot(ex - qx, ey - qy), 1e-6)
@@ -1329,8 +1376,8 @@ def body_svg(A, L, mode):
             if hidden_die(A.blocks[oid]["die"]):
                 continue
             dm = dimb(oid)
-            col = DIMT if dm else INK if t["role"] == "name" else A.clk[t["role"][4:]]["col"] if t["role"].startswith("clk:") else \
-                ACC if t["role"] == "more" else "#475569"
+            col = DIMT if dm else "#fff" if t["role"] == "bus" else INK if t["role"] == "name" else \
+                A.clk[t["role"][4:]]["col"] if t["role"].startswith("clk:") else ACC if t["role"] == "more" else "#475569"
         else:
             l = A.links[oid]
             if not shown(l):
@@ -1547,12 +1594,15 @@ def draw(A, L, mode, title, out, png=False):
         notes.append("積層: 同じ位置に重ねて描く。上の層は色つきの枠 + 斜線(斜線の色 = 種類。橙 = SRAM)+ 層の名前の札。文字は 1 層目が左上、2 層目が右下。"
                      "⊠ = 層をまたぐ接続(大きさ = ビット幅)。")
     t3 = ""
+    if any(A.isbus(b) for b in A.blocks.values()):
+        t3 += "帯 = バス(紺 = データ、灰 = 管理)。ブロックは短い矢印でバスにつながる。黄の札 = ポート(プロトコル)。薄い色の枠 = サブシステム。"
     if any(A.small(b) for b in A.blocks.values()):
         t3 += "名前だけの小さい箱 = データの流れに関係の薄いブロック(クロック・電源・温度・BIST)。"
     if hid:
         t3 += f"この図に描いていない線: {'・'.join(hid)}(別図 focus_*)。"
     if kind == "scene":
-        t3 += "薄い所 = この説明に登場しない。配置は元の図と同じ。番号 1·4·7 = その線を 1・4・7 番目で使う。動作の表の濃い色 = 前と変わった(切り替え)。"
+        t3 += "薄い所 = この説明に登場しない。配置は元の図と同じ。" + ("番号 1·4·7 = その線を 1・4・7 番目で使う。" if steps else "") + \
+              ("動作の表の濃い色 = 前と変わった(切り替え)。" if step_states(A, steps) else "")
     if t3:
         notes.append(t3)
     for n, t in enumerate(notes):

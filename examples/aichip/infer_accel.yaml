@@ -1,13 +1,14 @@
 # AI 推論アクセラレータ(架空)。2 枚積層: ロジックダイ(回路面 上)の上に、メモリダイ(回路面 下)を貼り合わせ。
 # 1 つのモデルから、全体図・層ごとの図・動作説明(同じ図を薄くして使い回す)・切り出し・別図(BIST・クロック・ブロックの中の回路)を作る。
+# 全体図の描き方は、論文・ホワイトペーパーのブロック図にならう: バス = 帯、ブロックは短い太い矢印でバスにつなぐ、ポートの札、サブシステムの枠。
 title: 推論アクセラレータ XA-1(架空)アーキテクチャ全体図
 view: top                      # 視点: top = 上面(放熱側)から透視 / bottom = バンプ側から
-grid: [12, 8]                  # マス目(列, 行)。座標は「上面から見た向き」で書く(左上が [0, 0])
+grid: [12, 9]                  # マス目(列, 行)。座標は「上面から見た向き」で書く(左上が [0, 0])
 focus: [data, ctrl]            # 全体図に描く線の種類。ほかの種類(test・clk)は別図 arch_focus_<種類> に同じ配置で描く
 small_kinds: [clk, pwr, test]  # 名前だけの小さい箱にする種類(データの流れに関係が薄い)。個別には small: true / false
-stack:                         # 下(基板側)から順
+stack:                         # 下(基板側)から順。free = わざと空けてあるマス(配線・電源の通り道)
   - {id: L1, name: ロジックダイ, face: up, note: "5nm・TSV で裏面のバンプへ"}
-  - {id: L2, name: メモリダイ, face: down, flip: y, at: [2, 0, 8, 7], note: "SRAM 専用プロセス・縦軸まわりに裏返して貼る"}
+  - {id: L2, name: メモリダイ, face: down, flip: y, at: [2, 2, 8, 6], free: [[2, 4, 8, 1]], note: "SRAM 専用プロセス・縦軸まわりに裏返して貼る"}
 bonds:
   - {between: [L1, L2], type: HB, note: "ハイブリッドボンディング 6µm ピッチ(F2F)"}
 clocks:
@@ -16,118 +17,121 @@ clocks:
   - {id: clk_csr, freq: 250MHz, from: pll0, note: "設定・管理(÷8)"}
   - {id: clk_link, freq: 1.75GHz, from: pll1, note: スケールアウトリンク}
   - {id: clk_mem, freq: 2GHz, from: pll0, note: "メモリダイ(HB 経由で clk_core を配る)"}
+groups:                        # サブシステムの枠(題つきの薄い色の地)
+  - {name: ホスト I/F, color: "#15803d", blocks: [host_phy, host_ctl, dma, obuf]}
+  - {name: 制御, color: "#6d28d9", blocks: [sched, stat, csr]}
+  - {name: 演算クラスタ(タイル ×8 + 真上の重みメモリ), color: "#1d4ed8", blocks: ["tile*", spine, post]}
+  - {name: スケールアウト, color: "#0f766e", blocks: [link_ctl, link_fec, link_phy, sync]}
+  - {name: クロック・電源・テスト, color: "#a16207", blocks: [pll0, pll1, ckgen, pmu, thermal, jtag, vreg]}
 blocks:
+  # ---- バス(帯)。shape: bus、bus: data | ctrl(帯の色)----
+  - {id: mbus, die: L1, at: [0, 0, 12, 1], name: 管理バス(CSR), shape: bus, bus: ctrl, kind: ctrl, clock: clk_csr, info: ["32b アドレス・32b データ", "ホスト・I2C・ブートのどれからも読み書き"]}
+  - {id: spine, die: L1, at: [2, 4, 8, 1], name: ストリームスパイン(10 ポート クロスバー), shape: bus, bus: data, kind: ctrl, clock: clk_core, info: ["各ポート 512b・クレジット方式", "同時 8 経路"]}
   # ---- L1 ロジックダイ ----
-  - {id: host_phy, die: L1, at: [0, 0, 1, 5], name: PCIe PHY, kind: io, clock: clk_host, info: ["Gen6 ×16", "64Gb/s/レーン", "PAM4"],
+  - {id: gpio, die: L1, at: [0, 1, 1, 1], name: 管理 I/F, kind: io, clock: clk_csr, info: ["I2C スレーブ 1MHz", "SPI マスタ 50MHz"]}
+  - {id: host_phy, die: L1, at: [0, 2, 1, 5], name: PCIe PHY, kind: io, clock: clk_host, info: ["Gen6 ×16", "64Gb/s/レーン", "PAM4"],
      inside_dir: v, inside_flow: false, inside: ["レーン 0–3|TX/RX ×4", "レーン 4–7|TX/RX ×4", "レーン 8–11|TX/RX ×4", "レーン 12–15|TX/RX ×4", "等化 CTLE・DFE|FFE 5 タップ", "CDR・基準 100MHz|PCS 128b/130b"]}
-  - {id: host_ctl, die: L1, at: [1, 0, 1, 3], name: PCIe コントローラ, kind: io, clock: clk_host, info: ["MAC/DLL/TL", "FLIT モード"],
+  - {id: host_ctl, die: L1, at: [1, 1, 1, 3], name: PCIe コントローラ, kind: io, clock: clk_host, info: ["MAC/DLL/TL", "FLIT モード"],
      inside_dir: v, inside_flow: false, inside: ["PIPE I/F|128b/130b", "mem:再送バッファ|CRC・ACK/NAK", "TLP 組立|BAR 復号"]}
-  - {id: dma, die: L1, at: [1, 3, 1, 2], name: DMA・入出力キュー, kind: ctrl, clock: clk_host, info: ["clk_host ⇔ clk_core"],
-     inside_dir: v, inside_flow: false, inside: ["fifo:入力 8MB", "fifo:出力 2MB", "fifo:非同期(CDC)"]}
-  - {id: boot, die: L1, at: [0, 5, 2, 1], name: ブート ROM・eFuse, kind: ctrl, clock: clk_csr, info: ["ROM 64KB", "eFuse 4Kbit"]}
-  - {id: gpio, die: L1, at: [0, 6, 2, 1], name: 管理 I/F(I2C・SPI・GPIO), kind: io, clock: clk_csr, info: ["I2C スレーブ 1MHz", "SPI マスタ 50MHz"]}
-  - {id: sched, die: L1, at: [2, 0, 3, 1], name: スケジューラ(マイクロコード), kind: ctrl, clock: clk_core, info: ["命令メモリ 1MB", "レイヤ単位のシーケンス・タイル割り当て"]}
-  - {id: wdec, die: L1, at: [5, 0, 3, 1], name: 重み展開(復号), kind: compute, clock: clk_core, info: ["エントロピー復号 8 並列", "圧縮率 平均 2.5 倍"]}
-  - {id: csr, die: L1, at: [8, 0, 2, 1], name: 設定レジスタ・統計(CSR), kind: ctrl, clock: clk_csr, info: ["設定 1024 語", "性能カウンタ 256 本"]}
-  - {id: "tile{i}", die: L1, at: [2, 1, 2, 2], array: [4, 2], pitch: [2, 3], name: "演算タイル {i}", kind: compute, clock: clk_core,
+  - {id: dma, die: L1, at: [1, 4, 1, 3], name: DMA・重み展開, kind: ctrl, clock: clk_host, info: ["clk_host ⇔ clk_core"],
+     inside_dir: v, inside_flow: false, inside: ["fifo:入力 8MB", "復号器 ×8|エントロピー", "fifo:非同期(CDC)", "fifo:出力 2MB"]}
+  - {id: obuf, die: L1, at: [0, 7, 2, 1], name: 出力バッファ, kind: ctrl, clock: clk_core, info: ["結果を貯めて DMA へ"],
+     inside_at: [0.45, 1], inside_flow: false, inside: ["fifo:結果 2MB", "整形|256b→1024b"]}
+  - {id: sched, die: L1, at: [2, 1, 3, 1], name: スケジューラ(マイクロコード), kind: ctrl, clock: clk_core, info: ["命令メモリ 1MB", "レイヤ単位のシーケンス・タイル割り当て"]}
+  - {id: stat, die: L1, at: [5, 1, 2, 1], name: 統計・トレース, kind: ctrl, clock: clk_csr, info: ["性能カウンタ 256 本", "トレース 4MB"]}
+  - {id: csr, die: L1, at: [7, 1, 3, 1], name: 設定レジスタ(CSR), kind: ctrl, clock: clk_csr, info: ["設定 1024 語", "電圧・遮断・クロックの設定を配る"]}
+  - {id: "tile{i}", die: L1, at: [2, 2, 2, 2], array: [4, 2], pitch: [2, 3], name: "演算タイル {i}", kind: compute, clock: clk_core,
      info: ["乗算器 256 個(INT8)", "作業 SRAM 2MB", "ピーク 2TOPS"],
      inside_flow: false, inside: ["fifo:入力", "mem:作業SRAM|2MB", "演算器 3 種|切り替え", "結果|レジスタ", "fifo:出力"]}
-  - {id: spine, die: L1, at: [2, 3, 8, 1], name: ストリームスパイン(8 ポート クロスバー), kind: ctrl, clock: clk_core,
-     info: ["各ポート 512b×2GHz=128GB/s・クレジット方式", "同時 8 経路"]}
-  - {id: post, die: L1, at: [2, 6, 4, 1], name: 後処理(TopK・量子化・整形), kind: compute, clock: clk_core, info: ["Softmax/TopK", "出力 256b"],
-     inside_at: [0.3, 1], inside_flow: false, inside: ["mem:指数 LUT|ROM 4K 語", "除算器|FP16", "比較器ツリー|TopK 64", "丸め・飽和|INT8", "fifo:出力"]}
-  - {id: red, die: L1, at: [6, 6, 4, 1], name: 集約ツリー(リダクション), kind: compute, clock: clk_core, info: ["4 入力 加算/最大", "パイプライン 3 段"],
-     inside_at: [0.36, 1], inside_flow: false, inside: ["加算器 ×4|256b", "比較器 ×4|最大", "セレクタ|加算/最大", "レジスタ|3 段"]}
-  - {id: link_ctl, die: L1, at: [10, 0, 1, 4], name: リンク制御, kind: io, clock: clk_link, info: ["スケールアウト", "8 レーン結束", "フロー制御"],
+  - {id: post, die: L1, at: [2, 7, 8, 1], name: 集約・後処理, kind: compute, clock: clk_core, info: ["部分和の加算/最大・TopK・量子化", "出力 256b"],
+     inside_at: [0.33, 0.61], inside_y: 0.44, inside_flow: false, inside: ["加算器 ×4|256b", "比較器ツリー|最大・TopK 64", "mem:指数 LUT|ROM 4K 語", "除算器|FP16", "丸め・飽和|INT8"]}
+  - {id: boot, die: L1, at: [11, 1, 1, 1], name: ブート ROM, kind: ctrl, clock: clk_csr, info: ["ROM 64KB", "eFuse 4Kbit"]}
+  - {id: link_ctl, die: L1, at: [10, 1, 1, 4], name: リンク制御, kind: io, clock: clk_link, info: ["スケールアウト", "8 レーン結束"],
      inside_dir: v, inside_flow: false, inside: ["fifo:非同期 core⇔link", "パケット化|ヘッダ 64b", "フロー制御|クレジット", "レーン結束|デスキュー"]}
-  - {id: link_fec, die: L1, at: [10, 4, 1, 2], name: FEC・再送, kind: io, clock: clk_link, info: ["RS(544,514)", "再送 1MB"]}
-  - {id: link_phy, die: L1, at: [11, 0, 1, 6], name: 112G SerDes, kind: io, clock: clk_link, info: ["×8 レーン", "112Gb/s/レーン", "PAM4"],
-     inside_dir: v, inside_flow: false, inside: ["レーン 0–1|TX/RX ×2", "レーン 2–3|TX/RX ×2", "レーン 4–5|TX/RX ×2", "レーン 6–7|TX/RX ×2", "等化 FFE・DFE|ADC 方式", "CDR・逓倍 PLL|基準 156.25MHz"]}
-  - {id: sync, die: L1, at: [10, 6, 2, 1], name: チップ間同期, kind: ctrl, clock: clk_link, info: ["SYNC パルス", "時刻 64b"]}
+  - {id: link_fec, die: L1, at: [10, 5, 1, 2], name: FEC・再送, kind: io, clock: clk_link, info: ["RS(544,514)"],
+     inside_dir: v, inside_flow: false, inside: ["符号器・復号器", "mem:再送バッファ|1MB"]}
+  - {id: link_phy, die: L1, at: [11, 2, 1, 5], name: 112G SerDes, kind: io, clock: clk_link, info: ["×8 レーン", "112Gb/s/レーン", "PAM4"],
+     inside_dir: v, inside_flow: false, inside: ["レーン 0–3|TX/RX ×4", "レーン 4–7|TX/RX ×4", "等化 FFE・DFE|ADC 方式", "CDR・逓倍 PLL|基準 156.25MHz"]}
+  - {id: sync, die: L1, at: [10, 7, 2, 1], name: チップ間同期, kind: ctrl, clock: clk_link, info: ["SYNC パルス", "時刻 64b"]}
   # ---- L1 の下の行: データの流れに関係の薄いブロック(名前だけの小さい箱)----
-  - {id: pll0, die: L1, at: [0, 7, 1, 1], name: PLL0, kind: clk}
-  - {id: pll1, die: L1, at: [1, 7, 1, 1], name: PLL1, kind: clk}
-  - {id: ckgen, die: L1, at: [2, 7, 2, 1], name: クロック生成・分配, kind: clk}
-  - {id: pmu, die: L1, at: [4, 7, 2, 1], name: 電源管理(PMU・DVFS), kind: pwr}
-  - {id: thermal, die: L1, at: [6, 7, 2, 1], name: 温度・電圧モニタ, kind: pwr}
-  - {id: jtag, die: L1, at: [8, 7, 2, 1], name: JTAG・BIST 制御, kind: test}
-  - {id: vreg, die: L1, at: [10, 7, 2, 1], name: LDO・電源スイッチ, kind: pwr}
+  - {id: pll0, die: L1, at: [0, 8, 1, 1], name: PLL0, kind: clk}
+  - {id: pll1, die: L1, at: [1, 8, 1, 1], name: PLL1, kind: clk}
+  - {id: ckgen, die: L1, at: [2, 8, 2, 1], name: クロック生成・分配, kind: clk}
+  - {id: pmu, die: L1, at: [4, 8, 2, 1], name: 電源管理(PMU・DVFS), kind: pwr}
+  - {id: thermal, die: L1, at: [6, 8, 2, 1], name: 温度・電圧モニタ, kind: pwr}
+  - {id: jtag, die: L1, at: [8, 8, 2, 1], name: JTAG・BIST 制御, kind: test}
+  - {id: vreg, die: L1, at: [10, 8, 2, 1], name: LDO・電源スイッチ, kind: pwr}
   # ---- L2 メモリダイ ----
-  - {id: mctl, die: L2, at: [2, 0, 6, 1], name: メモリ制御・ECC, kind: ctrl, clock: clk_mem, info: ["SECDED(72,64)", "アドレス復号・書き込み分配"]}
-  - {id: mbist, die: L2, at: [8, 0, 2, 1], name: メモリ BIST・救済, kind: test}
-  - {id: "wmem{i}", die: L2, at: [2, 1, 2, 2], array: [4, 2], pitch: [2, 3], name: "重みメモリ {i}", kind: mem, clock: clk_mem,
-     info: ["SRAM 512Mb", "読み出し 2048b"],
+  - {id: "wmem{i}", die: L2, at: [2, 2, 2, 2], array: [4, 2], pitch: [2, 3], name: "重みメモリ {i}", kind: mem, clock: clk_mem,
+     info: ["SRAM 512Mb・ECC", "読み出し 2048b"],
      inside_at: [0, 0.62], inside_y: 0.8, inside_flow: false, inside: ["行デコーダ", "mem:セル 512Mb|8 バンク", "SA 2048b"]}
-  - {id: abuf, die: L2, at: [2, 3, 8, 1], name: アクティベーションバッファ, kind: mem, clock: clk_mem, info: ["SRAM 2Gb(8 バンク)", "2 ポート"]}
-  - {id: decap, die: L2, at: [2, 6, 8, 1], name: デカップリング容量・電源スイッチ, kind: pwr}
-links:
-  # ---- ホスト側 ----
+  - {id: abuf, die: L2, at: [2, 7, 6, 1], name: アクティベーションバッファ, kind: mem, clock: clk_mem, info: ["SRAM 2Gb(8 バンク)・2 ポート"]}
+  - {id: mbist, die: L2, at: [8, 7, 1, 1], name: BIST・救済, kind: test}
+  - {id: decap, die: L2, at: [9, 7, 1, 1], name: デカップ容量, kind: pwr}
+links:                           # tab = ポートの札(プロトコル・ポート名)。バスの帯につながる端に付く
+  # ---- ホスト側(データ)----
   - {id: h1, from: host_phy, to: host_ctl, dir: both, lanes: 16, rate: 64Gbps, proto: PIPE}
   - {id: h2, from: host_ctl, to: dma, dir: both, width: 1024, clock: clk_host, proto: AXI-S}
-  - {id: h3, from: host_ctl, to: csr, dir: half, width: 64, clock: clk_csr, proto: CSR 読み書き, kind: ctrl}
-  - {id: d1, from: dma, to: spine, width: 512, clock: clk_core, proto: 入力ストリーム}
-  - {id: d2, from: dma, to: wdec, width: 256, clock: clk_core, proto: 圧縮重み}
-  - {id: b1, from: boot, to: sched, width: 32, clock: clk_csr, proto: マイクロコード, kind: ctrl}
-  # ---- 管理(I2C・SPI)。遅いが、設定と起動コードはここを通る ----
-  - {id: g1, from: gpio, to: csr, dir: half, width: 1, rate: 1MHz, proto: "I2C(設定・状態)", kind: ctrl}
-  - {id: g2, from: gpio, to: boot, width: 4, rate: 50MHz, proto: "SPI(起動コード)", kind: ctrl}
-  - {id: c0, from: csr, to: sched, width: 32, clock: clk_csr, proto: 設定, kind: ctrl}
-  - {id: c5, from: csr, to: pmu, width: 16, clock: clk_csr, proto: 電圧・遮断の設定, kind: ctrl}
-  - {id: m1, from: thermal, to: pmu, width: 16, clock: clk_csr, proto: 温度, kind: ctrl}
-  # ---- 演算 ----
-  - {id: s0, from: sched, to: spine, width: 128, clock: clk_core, proto: 経路設定, kind: ctrl}
-  - {id: "t{i}", from: spine, to: "tile{i}", for: 8, dir: both, width: 512, clock: clk_core, proto: ストリーム}
-  - {id: "r{i}", from: "tile{i}", to: red, for: [4, 5, 6, 7], width: 256, clock: clk_core, proto: 部分和}
-  - {id: r8, from: red, to: post, width: 256, clock: clk_core}
-  - {id: p1, from: post, to: dma, width: 256, clock: clk_core, proto: 出力}
-  # ---- スケールアウト ----
-  - {id: k1, from: spine, to: link_ctl, dir: both, width: 512, clock: clk_core, eff: 0.75, proto: "ストリーム(CDC)"}
+  - {id: d1, from: dma, to: spine, width: 512, clock: clk_core, proto: 入力・重み, tab: P0}
+  - {id: p1, from: post, to: obuf, width: 256, clock: clk_core, proto: 結果}
+  - {id: p2, from: obuf, to: dma, width: 1024, clock: clk_core, proto: 結果}
+  # ---- 演算(データ)----
+  - {id: "t{i}", from: spine, to: "tile{i}", for: 8, dir: both, width: 512, clock: clk_core, proto: ストリーム, tab: "P{i}"}
+  - {id: "r{i}", from: "tile{i}", to: post, for: [4, 5, 6, 7], width: 256, clock: clk_core, proto: 部分和}
+  # ---- スケールアウト(データ)----
+  - {id: k1, from: spine, to: link_ctl, dir: both, width: 512, clock: clk_core, eff: 0.75, proto: ストリーム, tab: P9}
   - {id: k2, from: link_ctl, to: link_fec, dir: both, width: 512, clock: clk_link}
   - {id: k3, from: link_fec, to: link_phy, dir: both, lanes: 8, rate: 112Gbps}
-  - {id: k4, from: sync, to: sched, width: 64, clock: clk_link, proto: 同期, kind: ctrl}
+  - {id: k4, from: sync, to: link_fec, width: 64, clock: clk_link, proto: 同期, kind: ctrl}
+  # ---- 管理バスにつながるもの(設定・起動コード。遅いが、ここを通らないと動かない)----
+  - {id: g1, from: gpio, to: mbus, dir: half, width: 1, rate: 1MHz, proto: I2C, kind: ctrl, tab: I2C}
+  - {id: b1, from: boot, to: mbus, width: 32, clock: clk_csr, proto: 起動コード, kind: ctrl, tab: ROM}
+  - {id: m_h, from: host_ctl, to: mbus, dir: half, width: 32, clock: clk_csr, kind: ctrl, tab: CSR}
+  - {id: m_s, from: mbus, to: sched, width: 32, clock: clk_csr, proto: マイクロコード・設定, kind: ctrl, tab: CSR}
+  - {id: m_t, from: mbus, to: stat, dir: half, width: 32, clock: clk_csr, kind: ctrl, tab: CSR}
+  - {id: m_c, from: mbus, to: csr, dir: half, width: 32, clock: clk_csr, kind: ctrl, tab: CSR}
+  - {id: m_l, from: mbus, to: link_ctl, dir: half, width: 32, clock: clk_csr, kind: ctrl, tab: CSR}
+  - {id: s0, from: sched, to: spine, width: 128, clock: clk_core, proto: 経路設定, kind: ctrl}
   # ---- 層をまたぐ接続(ハイブリッドボンディング)----
-  - {id: "w{i}", from: "wmem{i}", to: "tile{i}", for: 8, via: HB, width: 2048, clock: clk_mem, proto: 重み読み出し}
-  - {id: a1, from: spine, to: abuf, via: HB, dir: both, width: 4096, clock: clk_mem, proto: "活性値 読み書き(8 バンク)"}
-  - {id: w9, from: wdec, to: mctl, via: HB, width: 1024, clock: clk_mem, proto: 重み書き込み}
-  # ---- L2 メモリダイの中 ----
-  - {id: "mw{i}", from: mctl, to: "wmem{i}", for: 8, width: 256, clock: clk_mem, proto: 書き込み}
+  - {id: "w{i}", from: "wmem{i}", to: "tile{i}", for: 8, via: HB, dir: both, width: 2048, clock: clk_mem, proto: 重み 読み書き}
+  - {id: a1, from: post, to: abuf, via: HB, dir: both, width: 4096, clock: clk_mem, proto: "活性値 読み書き(8 バンク)"}
   # ---- テスト(全体図には描かない。別図 arch_focus_test)----
   - {id: j1, from: jtag, to: mbist, via: TSV, width: 8, clock: clk_csr, proto: BIST 制御, kind: test, far: true}
-  - {id: j2, from: jtag, to: csr, width: 8, clock: clk_csr, proto: デバッグアクセス, kind: test}
   - {id: "bt{i}", from: mbist, to: "wmem{i}", for: 8, width: 64, clock: clk_mem, proto: BIST, kind: test, mux: "通常/BIST"}
+  - {id: bt8, from: mbist, to: abuf, width: 64, clock: clk_mem, proto: BIST, kind: test, mux: "通常/BIST"}
   # ---- クロック(全体図には描かない。別図 arch_focus_clk)----
   - {id: c1, from: pll0, to: ckgen, kind: clk, label: "8GHz"}
   - {id: c2, from: pll1, to: ckgen, kind: clk, label: "1.75GHz"}
   - {id: "ck{i}", from: ckgen, to: "tile{i}", for: 8, kind: clk, label: clk_core}
   - {id: c3, from: ckgen, to: host_ctl, kind: clk, label: clk_host}
   - {id: c4, from: ckgen, to: link_ctl, kind: clk, label: clk_link}
-  - {id: c6, from: ckgen, to: mctl, via: HB, kind: clk, label: clk_mem, far: true}
+  - {id: c5, from: ckgen, to: mbus, kind: clk, label: clk_csr}
 scenes:
   - id: boot
-    title: 動作 0 — 起動と設定(SPI・I2C)
+    title: 動作 0 — 起動と設定(ブート ROM・I2C)
     steps:
-      - {text: "SPI で外部フラッシュから起動コードを読む(4b×50MHz)", links: [g2]}
-      - {text: "ブート ROM がマイクロコードをスケジューラへ書く", links: [b1]}
-      - {text: "外部の管理コントローラが I2C で設定レジスタを書く(1MHz、半二重)", links: [g1]}
-      - {text: "設定をスケジューラと電源管理へ配る", links: [c0, c5]}
+      - {text: "ブート ROM が起動コードを管理バスに流す", links: [b1]}
+      - {text: "スケジューラがマイクロコードを受け取る", links: [m_s]}
+      - {text: "外部の管理コントローラが I2C で設定を書く(1MHz、半二重)", links: [g1]}
+      - {text: "設定レジスタに届き、ここから電圧・クロックの設定が配られる", links: [m_c]}
   - id: load
     title: 動作 1 — 重みのロード(ホスト → 重みメモリ 0〜2)
     steps:
       - {text: "ホストが圧縮した重みを PCIe で送る(16 レーン、128GB/s)", links: [h1, h2]}
-      - {text: "DMA が clk_host → clk_core に乗せ替えて、重み展開へ渡す", links: [d2]}
-      - {text: "復号した重みを HB でメモリダイへ渡す(1024b×2GHz)", links: [w9]}
-      - {text: "メモリ制御が ECC を付けて各重みメモリへ書く", links: [mw0, mw1, mw2]}
+      - {text: "DMA が復号し、clk_core に乗せ替えてスパインへ流す", links: [d1]}
+      - {text: "スパインがタイル 0〜2 へ配る", links: [t0, t1, t2]}
+      - {text: "タイルが真上の重みメモリへ書く(HB、2048b×2GHz)", links: [w0, w1, w2]}
   - id: infer
     title: 動作 2 — 推論 1 回(入力 → タイル 4 → 集約 → 出力)
     steps:
-      - {text: "ホストが入力テンソルを送り、DMA が入力ストリームにする", links: [h1, h2, d1]}
+      - {text: "ホストが入力テンソルを送り、DMA がスパインへ流す", links: [h1, h2, d1]}
       - {text: "スケジューラがスパインの経路を設定する", links: [s0]}
-      - {text: "スパインがタイル 4 へ配る。活性値はバッファへ退避(HB)", links: [t4, a1]}
+      - {text: "スパインがタイル 4 へ配る", links: [t4]}
       - {text: "タイル 4 が真上の重みメモリ 4 から重みを読んで演算する(タイルの中の動きは 別図 tile)", links: [w4]}
-      - {text: "部分和を集約ツリーで束ね、後処理へ", links: [r4, r8]}
-      - {text: "結果を DMA 経由でホストへ返す", links: [p1]}
+      - {text: "部分和を集約・後処理へ。活性値はバッファへ退避(HB)", links: [r4, a1]}
+      - {text: "結果を出力バッファ・DMA 経由でホストへ返す", links: [p1, p2, h2, h1]}
 crops:
-  - {id: tile4, title: 切り出し — 演算タイル 4 のまわり(推論の流れ), blocks: [spine, tile4, tile5, post, red], scene: infer}
+  - {id: tile4, title: 切り出し — 演算タイル 4 のまわり(推論の流れ), blocks: [spine, tile4, tile5, post], scene: infer}
 
 # ---- 別図: ブロックの中の回路(階層の 1 段下)。全体図のブロックに「▸中の回路: 別図 tile」の印がつく ----
 details:
