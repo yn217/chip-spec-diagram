@@ -33,6 +33,8 @@ ITEMS = [
      ["clocktree.py", "product_soc.yaml", "--png"], "clock_tree_test.png"),
     ("reset_tree", "リセット系統図", "源ごとの列・同期化・解除順・RDC・電源ドロップ",
      ["resettree.py", "product_soc.yaml", "--png"], "reset_tree.png"),
+    ("mil_symbols", "MIL 論理記号の部品集", "MIL-STD-806B の寸法。ゲート図・リセット系統図が参照する",
+     ["milsym.py", "catalog", "--png"], "mil_symbols.png"),
     ("gate_pipeline", "ゲートレベル図", "FF の段をそろえて並べる",
      ["gatediag.py", "render", "gate/pipeline.yaml", "--png"], "pipeline.png"),
     ("gate_clock_mux", "ゲートレベル図(クロック切替)", "IEEE 記号・クロックの幹線",

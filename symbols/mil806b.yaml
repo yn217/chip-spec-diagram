@@ -1,0 +1,73 @@
+# MIL 論理記号の部品集(MIL-STD-806B の distinctive shape)
+#
+# 回路図を描くスクリプト(gatediag・resettree・aichip の回路の図)は、ゲート記号をここから読む。形を変える時はこのファイルだけを直す。
+# 座標の単位は規格の図の寸法(1.00 = AND の奥行き)。原点 = 記号の外形の左上、x は右、y は下。描く時は 1 単位あたりの px(scale)を掛ける。
+# 寸法の出典: MIL-STD-806B の記号寸法図(AND・OR・増幅器(バッファ)・否定の丸)。規格に寸法がない所は「harness」と書いた値を使う。
+#
+#   AND   奥行き 1.00、高さ 0.80、前は半径 0.40 の半円(直線 0.60 + 半円)
+#   OR    奥行き 1.00、高さ 0.80、前は半径 0.80 の円弧 2 つ(上下の直線 0.30 の先から。中心は反対側の辺の上)、後ろは半径 0.80 の円弧
+#   BUF   3 辺 0.70 の正三角形(後ろの辺が縦)
+#   丸    直径 0.16(否定。出力の先に接して置く)
+#
+# 部品の項目:
+#   body    外形の SVG パス(単位の座標)。円弧は A r,r 0 large sweep x,y
+#   size    [奥行き, 高さ](否定の丸を除く)
+#   out     出力の点 [x, y](否定の丸があれば、丸の先へ自動でずらす)
+#   bubble  true = 出力に否定の丸
+#   inputs  入力の辺: {type: line, x: 0} = 縦の直線 / {type: arc, cx, cy, r} = 円弧(OR の後ろ。入力線を円弧まで伸ばす)
+#   extra   外形のほかに引く線(XOR の後ろの 2 本目の円弧)
+#   max_in  入力の数の上限(BUF・NOT は 1)
+#   dims    寸法の控え(カタログの図に寸法線を引く。check で外形と合っているかを確かめる)
+
+unit_note: "1 単位 = AND の奥行き。gatediag は 1 単位 = 45px(2 入力のゲートの高さ 36px)"
+pin_pitch: 0.30          # 入力の間隔(harness。2 入力 = 0.25 と 0.55 の位置)
+pin_margin: 0.10         # 外形の上下の端から一番外の入力までの最小の余白(harness)。足りない時は入力の辺を上下に伸ばす(MIL-STD-806B で許される延長線)
+bubble_d: 0.16
+stroke: 0.036            # 線の太さ(単位。45px なら 1.6px)
+
+parts:
+  and:
+    title: AND
+    size: [1.00, 0.80]
+    body: "M0,0 H0.60 A0.40,0.40 0 0 1 0.60,0.80 H0 Z"
+    out: [1.00, 0.40]
+    inputs: {type: line, x: 0}
+    dims: {width: 1.00, height: 0.80, front_r: 0.40}
+  nand:
+    title: NAND
+    like: and
+    bubble: true
+  or:
+    title: OR
+    size: [1.00, 0.80]
+    # 上の辺: 直線 0.30 → 半径 0.80 の円弧で先端へ(中心は (0.30, 0.80) = 下の辺の上)。先端の x = 0.30 + √(0.80² − 0.40²) = 0.993
+    body: "M0,0 H0.30 A0.80,0.80 0 0 1 0.9928,0.40 A0.80,0.80 0 0 1 0.30,0.80 H0 A0.80,0.80 0 0 0 0,0 Z"
+    out: [0.9928, 0.40]
+    inputs: {type: arc, cx: -0.6928, cy: 0.40, r: 0.80}
+    dims: {width: 1.00, height: 0.80, straight: 0.30, front_r: 0.80, back_r: 0.80}
+  nor:
+    title: NOR
+    like: or
+    bubble: true
+  xor:
+    title: XOR
+    like: or
+    shift: 0.15          # OR の形を右へずらし、後ろにもう 1 本の円弧を引く(harness。規格の図に寸法がない。IEEE Std 91 の図の比率)
+    extra: ["M0,0.80 A0.80,0.80 0 0 0 0,0"]
+    inputs: {type: arc, cx: -0.6928, cy: 0.40, r: 0.80}
+  xnor:
+    title: XNOR
+    like: xor
+    bubble: true
+  buf:
+    title: バッファ(増幅器)
+    size: [0.6062, 0.70]
+    body: "M0,0 L0.6062,0.35 L0,0.70 Z"
+    out: [0.6062, 0.35]
+    inputs: {type: line, x: 0}
+    max_in: 1
+    dims: {side: 0.70}
+  not:
+    title: NOT(インバータ)
+    like: buf
+    bubble: true

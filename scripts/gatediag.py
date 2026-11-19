@@ -23,7 +23,7 @@ gate.yaml:
   groups:                               # 説明用の囲み(任意)
     - {label: 同期化 2 段, cells: [ff1, ff2]}
   "0" / "1" はタイ(定数)。cell に label(表示名)・note(注記)を書ける。
-  記号は IEEE Std 91 / MIL-STD-806 の形(OR の前は半径 = 高さの円弧 2 つ)。
+  ゲート記号は MIL 論理記号の部品集 symbols/mil806b.yaml(MIL-STD-806B の寸法)から読む。形を変える時は部品集を直す。
   wires: {clock: false, reset: false}   # 既定はクロック・リセットの配線を描かず、端子に網名を書く。true で描く
                                         # (描く時は下に水平の幹線を引き、縦に上げて短い水平で端子へ。--clock-wires / --reset-wires)
 
@@ -35,6 +35,7 @@ gate.yaml:
 import os, sys, re, argparse, collections
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from chipdiag import esc, wlen, INK, to_png
+import milsym                   # ゲート記号の形は部品集 symbols/mil806b.yaml から読む(ここに形を書かない)
 import yaml
 
 GRAY = "#64748b"
@@ -56,8 +57,7 @@ def wrap_label(txt, n=BLOCK_LINE, max_lines=3):
     return [t for t in out if t] or [""]
 CLK_PAL = ["#2563eb", "#9333ea", "#0891b2", "#db2777", "#16a34a", "#ca8a04"]
 RST_C = "#92400e"
-OR_C = 3 ** .5 / 2          # IEEE Std 91 / MIL-STD-806: OR の前の 2 つの円弧(半径 = 高さ)の頂点までの奥行き = √3/2 × 高さ
-OR_X = 5 / 26               # XOR の後ろの線の間隔(高さ比)
+GATE_U = 45                 # ゲート記号の大きさ: 部品集の 1 単位 = 45px(2 入力のゲートの高さ 0.80 → 36px、入力の間隔 0.30 → 13.5px)
 GATES = {"and", "or", "nand", "nor", "xor", "xnor", "not", "buf"}
 CONST = {"0", "1", "1'b0", "1'b1", "0'b0"}
 
@@ -348,22 +348,12 @@ class Gate:
         elif k == "pin_out":
             w, h = wlen(n["label"]) * 6.6 + 26, 20
             P["a"] = (0, 10, "L")
-        elif k in ("not", "buf"):
-            w, h = 40, 26
-            P["i0"] = (0, 13, "L")
-            P["y"] = (w, 13, "R")
-        elif k in GATES:
-            ni = len([p for p in n["pins"] if p.startswith("i")])
-            h = max(36, ni * 14 + 8)
-            if k in ("and", "nand"):
-                w = h                                    # IEEE Std 91: 奥行き = 高さ(直線 h/2 + 半円)
-            else:
-                w = OR_C * h + (OR_X * h if k in ("xor", "xnor") else 0)   # 前は半径 h の円弧 2 つ
-            if k in ("nand", "nor", "xnor"):
-                w += 8
-            for i in range(ni):
-                P[f"i{i}"] = (0, h / 2 + (i - (ni - 1) / 2) * 14, "L")
-            P["y"] = (w, h / 2, "R")
+        elif k in GATES:                                 # MIL 論理記号: 大きさと端子の位置は部品集から
+            ni = max(1, len([p for p in n["pins"] if p.startswith("i")]))
+            g = milsym.geom(k, ni, GATE_U)
+            w, h = g["w"], g["h"]
+            for pn, (dx, dy) in g["pins"].items():
+                P[pn] = (dx, dy, "R" if pn == "y" else "L")
         elif k == "mux":
             ni = len([p for p in n["pins"] if p.startswith("i")])
             h = max(52, ni * 20 + 16)
@@ -908,32 +898,9 @@ class Gate:
             o.append(f'<path d="M{f(x)},{f(y + h / 2)} L{f(x + 10)},{f(y)} L{f(x + w)},{f(y)} L{f(x + w)},{f(y + h)} L{f(x + 10)},{f(y + h)} Z" '
                      f'fill="#f1f5f9" stroke="{INK}" stroke-width="1.4"/><text x="{f(x + 16)}" y="{f(y + 14)}" font-size="11" '
                      f'font-weight="700" fill="{INK}">{esc(n["label"])}</text>')
-        elif k in ("not", "buf"):
-            tw = w - (8 if k == "not" else 0)
-            o.append(f'<path d="M{f(x)},{f(y)} L{f(x + tw)},{f(y + h / 2)} L{f(x)},{f(y + h)} Z" {S}/>')
-            if k == "not":
-                o.append(bubble(x + tw + 3.6, y + h / 2))
-        elif k in ("and", "nand"):
-            bw = w - (8 if k == "nand" else 0)
-            r = h / 2
-            o.append(f'<path d="M{f(x)},{f(y)} L{f(x + bw - r)},{f(y)} A{f(r)},{f(r)} 0 0 1 {f(x + bw - r)},{f(y + h)} L{f(x)},{f(y + h)} Z" {S}/>')
-            if k == "nand":
-                o.append(bubble(x + bw + 3.6, y + h / 2))
-        elif k in ("or", "nor", "xor", "xnor"):
-            # IEEE Std 91 / MIL-STD-806 の形: 前 = 半径 h の円弧 2 つ(中心は反対側の後ろの角)、後ろ = 半径 h の円弧
-            off = OR_X * h if k in ("xor", "xnor") else 0
-            x0 = x + off
-            c = OR_C * h
-            o.append(f'<path d="M{f(x0)},{f(y)} A{f(h)},{f(h)} 0 0 1 {f(x0 + c)},{f(y + h / 2)} A{f(h)},{f(h)} 0 0 1 {f(x0)},{f(y + h)} '
-                     f'A{f(h)},{f(h)} 0 0 0 {f(x0)},{f(y)} Z" {S}/>')
-            if off:
-                o.append(f'<path d="M{f(x)},{f(y + h)} A{f(h)},{f(h)} 0 0 0 {f(x)},{f(y)}" fill="none" stroke="{INK}" stroke-width="1.6"/>')
-            for pn, (dx, dy, sd) in P.items():           # 入力線を後ろの円弧まで伸ばす
-                if pn.startswith("i"):
-                    xb = x - c + (h * h - (dy - h / 2) ** 2) ** .5
-                    o.append(f'<path d="M{f(x)},{f(y + dy)} L{f(xb)},{f(y + dy)}" stroke="{INK}" stroke-width="1.5"/>')
-            if k in ("nor", "xnor"):
-                o.append(bubble(x0 + c + 3.6, y + h / 2))
+        elif k in GATES:                                 # MIL 論理記号(部品集 symbols/mil806b.yaml)
+            ni = max(1, len([p for p in P if p.startswith("i")]))
+            o.append(milsym.svg(k, x, y, ni, GATE_U, INK, "#fff", 1.6))
         elif k == "mux":
             o.append(f'<path d="M{f(x)},{f(y)} L{f(x + w)},{f(y + 12)} L{f(x + w)},{f(y + h - 12)} L{f(x)},{f(y + h)} Z" {S}/>')
             ni = len([p for p in P if p.startswith("i")])

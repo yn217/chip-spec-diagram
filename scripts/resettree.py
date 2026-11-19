@@ -35,6 +35,8 @@ diagram.yaml の resets: を使う
 import os, sys, re, argparse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from chipdiag import Chip, load, esc, wlen, INK, to_png
+import milsym                                             # OR の記号は MIL 論理記号の部品集 symbols/mil806b.yaml から
+GATE_U = 45                                               # 部品集の 1 単位 = 45px(ゲート図と同じ大きさ)
 
 PAL = ["#2563eb", "#9333ea", "#ea580c", "#db2777", "#0891b2", "#16a34a", "#ca8a04"]
 KIND = {"por": "電源投入", "bod": "電圧低下", "pad": "外部端子", "wdt": "ウォッチドッグ", "sw": "ソフトウェア",
@@ -427,8 +429,8 @@ class ResetTree:
         INT_Y = CT + 14
         ROW0 = INT_Y + BH + 34
         X_CTL = X_C0 + ns * CS + 8                         # リセット制御の枠
-        GX = X_CTL + 22                                   # OR(IEEE Std 91 の形: 奥行き = √3/2 × 高さ)
-        GW = 0.866 * max([max(len([x for x in d.get("sources", []) if x in self.sid]) * 14 + 8, 30) for d in doms] + [30])
+        GX = X_CTL + 22                                   # OR(MIL 論理記号の部品集)
+        GW = milsym.geom("or", 2, GATE_U)["w"]
         X_ST = GX + GW + 14                               # 伸長・PLL 待ちの文字
         X_SY = X_CTL + 236                                # 同期化
         W_SY = 150
@@ -517,16 +519,15 @@ class ResetTree:
             ins = [x for x in d.get("sources", []) if x in self.sid]
             ins.sort(key=lambda x: sidx[x])
             k = len(ins)
-            gh = max(k * 14 + 8, 30)
+            g = milsym.geom("or", max(k, 2), GATE_U)    # OR は MIL 論理記号の部品集から(大きさ・端子の位置)
+            gw, gh = g["w"], g["h"]
+            gx0 = GX
             gy = y0 + h / 2 - gh / 2
-            d["_g"] = (GX, gy, 0.866 * gh, gh)
+            d["_g"] = (gx0, gy, gw, gh, k)
             for j, x in enumerate(ins):
-                iy = gy + gh / 2 + (j - (k - 1) / 2) * 14
+                iy = gy + g["pins"][f"i{j}"][1] if k > 1 else y0 + h / 2
                 joins[x].append(iy)
-                if k > 1:
-                    xb = GX - .866 * gh + (gh * gh - (iy - gy - gh / 2) ** 2) ** .5    # 後ろの円弧(半径 = 高さ)
-                else:
-                    xb = X_SY
+                xb = gx0 if k > 1 else X_SY
                 branches.append((colx[x], iy, xb, scol[x]))
         # 源の札と縦線(列)
         for x in srcs:
@@ -574,11 +575,9 @@ class ResetTree:
             y0, h = pos[d["id"]]
             col = d["_col"]
             cyd = y0 + h / 2
-            gx, gy, gw, gh = d["_g"]
-            k = len([s for s in d.get("sources", []) if s in self.sid])
+            gx, gy, gw, gh, k = d["_g"]
             if k > 1:
-                o.append(f'<path d="M{f(gx)},{f(gy)} A{f(gh)},{f(gh)} 0 0 1 {f(gx + gw)},{f(gy + gh / 2)} A{f(gh)},{f(gh)} 0 0 1 {f(gx)},{f(gy + gh)} '
-                         f'A{f(gh)},{f(gh)} 0 0 0 {f(gx)},{f(gy)} Z" fill="#fff" stroke="{INK}" stroke-width="1.6"/>')
+                o.append(milsym.svg("or", gx, gy, k, GATE_U, INK, "#fff", 1.6))
                 ow.append(f'<path d="M{f(gx + gw)},{f(cyd)} L{f(X_SY)},{f(cyd)}" stroke="{INK}" stroke-width="1.6" fill="none" marker-end="url(#rsa)"/>')
             else:
                 ow.append(f'<path d="M{f(X_SY - 12)},{f(cyd)} L{f(X_SY)},{f(cyd)}" stroke="{INK}" stroke-width="1.6" fill="none" marker-end="url(#rsa)"/>')
