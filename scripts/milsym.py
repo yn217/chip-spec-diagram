@@ -40,6 +40,11 @@ def lib():
     return _LIB
 
 
+def lead():
+    """端子の引出線の長さ(単位)"""
+    return lib().get("lead", 0.30)
+
+
 def kinds():
     return list(lib()["parts"])
 

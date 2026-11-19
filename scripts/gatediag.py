@@ -57,6 +57,7 @@ def wrap_label(txt, n=BLOCK_LINE, max_lines=3):
     return [t for t in out if t] or [""]
 CLK_PAL = ["#2563eb", "#9333ea", "#0891b2", "#db2777", "#16a34a", "#ca8a04"]
 RST_C = "#92400e"
+LEAD = milsym.lead() * 45   # 端子の引出線の長さ(部品集の lead。左右の端子から水平に出し、配線はその先で曲げる)
 GATE_U = 45                 # ゲート記号の大きさ: 部品集の 1 単位 = 45px(2 入力のゲートの高さ 0.80 → 36px、入力の間隔 0.30 → 13.5px)
 GATES = {"and", "or", "nand", "nor", "xor", "xnor", "not", "buf"}
 CONST = {"0", "1", "1'b0", "1'b1", "0'b0"}
@@ -338,6 +339,18 @@ class Gate:
         return self.warn
 
     # ---------- 形 ----------
+    def with_lead(self, n, g):
+        """左右の端子に水平の引出線を足す: 記号を LEAD だけ右へずらし、左の端子は左端、右の端子は LEAD 先へ。
+        端子のすぐ横で垂直の線がつながらないようにするため(上下の端子は x だけずらす)"""
+        w, h, P = g
+        n["_body"] = g
+        if n["kind"] in ("pin_in", "pin_out", "dummy"):
+            return g
+        Q = {}
+        for pn, (dx, dy, sd) in P.items():
+            Q[pn] = (dx + 2 * LEAD if sd == "R" else dx if sd == "L" else dx + LEAD, dy, sd)
+        return (w + 2 * LEAD, h, Q)
+
     def geom(self, n):
         """(幅, 高さ, {ピン: (dx, dy, 側)})"""
         k = n["kind"]
@@ -508,7 +521,7 @@ class Gate:
                     pos[u] = i
         self.cols = cols
         # 縦位置: つながるピンの高さにそろえる
-        G = {u: self.geom(N[u]) for u in N}
+        G = {u: self.with_lead(N[u], self.geom(N[u])) for u in N}
         self.G = G
         Y = {}
         GAP, DGAP = 30, 12
@@ -884,9 +897,18 @@ class Gate:
     def sym(self, u):
         n = self.nodes[u]
         k = n["kind"]
-        w, h, P = self.G[u]
+        w, h, P = n.get("_body", self.G[u])
         x, y = self.ox(u), self.Y[u] + self.top
         o = []
+        if k not in ("pin_in", "pin_out", "dummy"):          # 引出線(左右の端子から LEAD の長さ、水平)
+            for pn, (dx, dy, sd) in P.items():
+                if sd in ("L", "R") and (pn in n["pins"] or pn in ("d", "q", "y") or pn.startswith("i")):
+                    xa = x + dx + LEAD
+                    net = (n["pins"].get(pn) or (None, None))[1]
+                    lc = self.ncol_of(net) if net and not is_const(net) else INK      # 引出線は、つながる網の色と太さ
+                    lw = 3 if net and self.width.get(net, 1) > 1 else 1.5
+                    o.append(f'<path d="M{f(xa - LEAD if sd == "L" else xa)},{f(y + dy)} H{f(xa if sd == "L" else xa + LEAD)}" stroke="{lc}" stroke-width="{lw}"/>')
+            x += LEAD                                         # 記号の本体は LEAD だけ右
         S = f'fill="#fff" stroke="{INK}" stroke-width="1.6"'
         def bubble(cx, cy):
             return f'<circle cx="{f(cx)}" cy="{f(cy)}" r="3.6" {S}/>'
@@ -1103,7 +1125,7 @@ class Gate:
                 drop = self.X[c] - 8 - (k % 3) * 5
                 pxb, pyb = self.ox(b) + dx, Y[b] + dy + top
                 if sd == "L":
-                    end = pxb - (7.2 if bpn == "ck" and N[b].get("cell", {}).get("edge") == "neg" else 0)
+                    end = pxb                                 # 引出線の左端(立ち下がりの丸は引出線の先にある)
                     d_ = f"M{f(drop)},{f(ry)} L{f(drop)},{f(pyb)} L{f(end)},{f(pyb)}"
                 elif sd == "B":
                     yy = pyb + 10
@@ -1154,10 +1176,11 @@ class Gate:
                 continue
             x0, y0 = self.px(a, apn), Y[a] + self.G[a][2][apn][1] + top
             col = self.ncol_of(net)
-            o.append(f'<text class="h" x="{f(x0 + 4)}" y="{f(y0 - 4)}" font-size="9.5" fill="{col}">{esc(net)}</text>')
+            xl = x0 - (LEAD if N[a]["kind"] not in ("pin_in", "pin_out", "dummy") else 0)   # 引出線の根元(記号の出力の辺)
+            o.append(f'<text class="h" x="{f(xl + 2)}" y="{f(y0 - 4)}" font-size="9.5" fill="{col}">{esc(net)}</text>')
             bw = self.width.get(net, 1)
             if bw > 1:
-                xm = x0 + 10
+                xm = xl + LEAD / 2                                # バス幅の斜線は引出線の上(曲がり角から離す)
                 o.append(f'<path d="M{f(xm - 4)},{f(y0 + 6)} L{f(xm + 4)},{f(y0 - 6)}" stroke="{col}" stroke-width="1.4"/>'
                          f'<text x="{f(xm + 2)}" y="{f(y0 + 14)}" font-size="9.5" font-weight="700" fill="{col}">{bw}</text>')
         for u in N:
