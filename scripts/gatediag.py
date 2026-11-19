@@ -28,6 +28,9 @@ gate.yaml:
                                         # (描く時は下に水平の幹線を引き、縦に上げて短い水平で端子へ。--clock-wires / --reset-wires)
 
 配置: 左から右へ信号の流れ順に列を作り(長い接続は中継点を入れる)、列の間の通路に縦の幹線を引く。戻りの接続は上を回る。
+縦位置は曲がりを減らすように決める(R64): AND・OR 系の入力を駆動元の高さ順に入れ替え → まっすぐにする接続を優先度順に決めて
+塊にする(矛盾するものは採らない)→ 塊を並び順と間隔を守って置く → 塊を動かして、まっすぐな接続を増やす(14px 未満の段差は悪いとみなす)
+→ 箱(block)の端子を相手の高さへ動かす。図ごとに「曲がり: … まっすぐ n 本・曲がる m 本」を出す(GATEDIAG_NO_ALIGN=1 で前の方法)。
 クロックの網は色分け(元の端子ごと)、リセットの網は茶色。
 チェック(lint): [未接続] [複数駆動] [ループ](FF を通らない組み合わせのループ)[クロック](FF のクロックを論理で作っている:
   ICG を使う)[CDC](別のクロックの FF から同期化なしで受けている / 論理を通してから同期化している)
@@ -569,12 +572,277 @@ class Gate:
                     prev = u
         if self.stage:
             self.snap_rows(Y, G, cols, want, gap)
+        if self.s.get("layout", {}).get("align", True) and not os.environ.get("GATEDIAG_NO_ALIGN"):  # まっすぐにする接続を先に決めて、並べ直す(曲がりを減らす)
+            self.swap_inputs(Y, G, lvl)
+            self.align_place(Y, G, cols, lvl, gap, want, fixed={u: Y[u] for u in self.stage} if self.stage else {})
         for _ in range(3):                                 # ほかの網が動くと通れるようになることがあるので数回
             self.straighten(Y, G, cols, lvl)
+        if self.s.get("layout", {}).get("align", True) and not os.environ.get("GATEDIAG_NO_ALIGN"):
+            self.slide_pins(Y, G, lvl)
         mn = min(Y.values()) if Y else 0
         for u in Y:
             Y[u] -= mn
         self.Y = Y
+
+    # ---------- 曲がりを減らす配置 ----------
+    COMMUTE = {"and", "or", "nand", "nor", "xor", "xnor"}
+
+    def swap_inputs(self, Y, G, lvl):
+        """入れ替えてよい入力(AND・OR 系)は、駆動元の高さの順に端子へ割り当て直す(上の駆動元 → 上の入力)。交差と曲がりが減る"""
+        N = self.nodes
+        for u, n in N.items():
+            if n["kind"] not in self.COMMUTE:
+                continue
+            ins = sorted(pn for pn in n["pins"] if pn.startswith("i"))
+            def src_y(net):
+                if not net or is_const(net) or not self.drv.get(net):
+                    return 1e9
+                d = self.dummies.get((net, lvl[u] - 1))
+                a, apn = (d, "o") if d else self.drv[net][0]
+                return Y[a] + G[a][2][apn][1] if a in Y and apn in G[a][2] else 1e9
+            nets = [n["pins"][pn][1] for pn in ins]
+            new = sorted(nets, key=src_y)
+            if new == nets:
+                continue
+            for pn, net in zip(ins, new):
+                n["pins"][pn] = ("in", net)
+            for net in set(nets):                          # 網の行き先表(元の表と共有)も直す
+                lst = self.snk.get(net)
+                if lst is None:
+                    continue
+                keep = [x for x in lst if x[0] != u]
+                lst[:] = keep + [(u, pn) for pn, nt in zip(ins, new) if nt == net]
+
+    def align_edges(self, lvl):
+        """隣の列どうしの接続(駆動元の端子 → 行き先の端子)と、まっすぐにする優先度"""
+        N = self.nodes
+        E = {}
+        for net, ds in self.drv.items():
+            if not ds:
+                continue
+            a, apn = ds[0]
+            if a not in lvl:
+                continue
+            fwd = [(b, bpn) for b, bpn in self.snk.get(net, []) if b in lvl and lvl[b] > lvl[a]]
+            single = len(fwd) == 1
+            bus = self.width.get(net, 1) > 1
+            for b, bpn in fwd:
+                chain = [(a, apn)] + [(self.dummies[(net, c)], "io") for c in range(lvl[a] + 1, lvl[b])] + [(b, bpn)]
+                for (u, pu), (v, pv) in zip(chain, chain[1:]):
+                    pu = "o" if pu == "io" else pu
+                    pv = "i" if pv == "io" else pv
+                    long_ = N[u]["kind"] == "dummy" or N[v]["kind"] == "dummy"
+                    w = 1 + (3 if single else 0) + (3 if long_ else 0) + (1 if bus else 0)
+                    k = (u, pu, v, pv)
+                    E[k] = max(E.get(k, 0), w)
+        return E
+
+    def align_place(self, Y, G, cols, lvl, gap, want, fixed):
+        """曲がりを減らす縦位置(優先度つきの整列 + 詰め):
+        1. 隣の列どうしの接続に優先度を付ける(行き先が 1 つの網・長い配線・バスを優先)
+        2. 優先度の高い順に「まっすぐにする」と決め、まっすぐな接続でつながったセルを 1 つの塊(相対位置が固定)にする。
+           ほかの決定と矛盾する(重なる・並び順が入れ替わる・固定の FF とずれる)ものは採らない
+        3. 塊を、列の中の並び順と間隔を守って置く(行き先の高さに近づける)"""
+        N = self.nodes
+        order = {c: sorted(cols[c], key=lambda u: Y[u]) for c in cols}
+        pairs = []                                         # 列の中で上下に並ぶセル: (上, 下, 必要な間隔)
+        for c, us in order.items():
+            for a, b in zip(us, us[1:]):
+                pairs.append((a, b, G[a][1] + gap(a, b)))
+        nodes = list(Y)
+        parent = {u: u for u in nodes}
+        off = {u: 0.0 for u in nodes}                      # off[u] = Y[u] − Y[塊の代表]
+        def find(u):
+            if parent[u] == u:
+                return u, 0.0
+            r, o = find(parent[u])
+            parent[u], off[u] = r, off[u] + o
+            return r, off[u]
+        BIG = 1e6
+        def solve(extra_fix=None):
+            """塊ごとの位置の下限・上限(差の制約。正の閉路 = 矛盾 → None)"""
+            roots = {}
+            for u in nodes:
+                r, o = find(u)
+                roots.setdefault(r, []).append(u)
+            cons = []                                      # y[b] − y[a] >= w
+            for a, b, need in pairs:
+                ra, oa = find(a)
+                rb, ob = find(b)
+                w = oa + need - ob
+                if ra == rb:
+                    if w > 1e-6:
+                        return None
+                    continue
+                cons.append((ra, rb, w))
+            fx = {}
+            for u, y in list(fixed.items()) + list((extra_fix or {}).items()):
+                r, o = find(u)
+                v = y - o
+                if r in fx and abs(fx[r] - v) > 1e-6:
+                    return None
+                fx[r] = v
+            V = list(roots)
+            lo = {r: fx.get(r, -BIG) for r in V}
+            hi = {r: fx.get(r, BIG) for r in V}
+            for it in range(len(V) + 1):
+                ch = False
+                for a, b, w in cons:
+                    if lo[a] + w > lo[b] + 1e-6:
+                        if b in fx:
+                            return None
+                        lo[b] = lo[a] + w; ch = True
+                    if hi[b] - w < hi[a] - 1e-6:
+                        if a in fx:
+                            return None
+                        hi[a] = hi[b] - w; ch = True
+                if not ch:
+                    break
+            else:
+                return None
+            if any(lo[r] > hi[r] + 1e-6 for r in V):
+                return None
+            return roots, cons, fx, lo, hi
+        E = self.align_edges(lvl)
+        used = set()
+        cur = lambda u, pn: Y[u] + G[u][2][pn][1]
+        for (u, pu, v, pv), w in sorted(E.items(), key=lambda kv: (-kv[1], abs(cur(kv[0][0], kv[0][1]) - cur(kv[0][2], kv[0][3])))):
+            if (u, pu, "R") in used or (v, pv, "L") in used or pu not in G[u][2] or pv not in G[v][2]:
+                continue
+            ru, ou = find(u)
+            rv, ov = find(v)
+            d = (ou + G[u][2][pu][1]) - (ov + G[v][2][pv][1])     # y[rv] = y[ru] + d にすれば、まっすぐ
+            if ru == rv:
+                if abs(d) < 1e-6:
+                    used |= {(u, pu, "R"), (v, pv, "L")}
+                continue
+            snap = (dict(parent), dict(off))
+            parent[rv], off[rv] = ru, d
+            if solve() is None:
+                parent.clear(); parent.update(snap[0]); off.clear(); off.update(snap[1])
+                continue
+            used |= {(u, pu, "R"), (v, pv, "L")}
+        res = solve()
+        if res is None:
+            return
+        roots, cons, fx, lo, hi = res
+        # 塊を置く: 固定の塊から、大きい塊から順に。望む高さ = 今の位置(まっすぐでない接続の行き先に寄せた位置)の平均
+        want_y = {}
+        for r, us in roots.items():
+            vs = [Y[u] - find(u)[1] for u in us]
+            want_y[r] = sum(vs) / len(vs)
+        done = {}
+        for r in sorted(roots, key=lambda r: (r not in fx, -len(roots[r]), want_y[r])):
+            res = solve({roots[q][0]: done[q] + find(roots[q][0])[1] for q in done})    # 置いた塊を固定して、残りの範囲を求め直す
+            if res is None:
+                break
+            _, _, _, lo, hi = res
+            y = fx.get(r, min(max(want_y[r], lo[r]), hi[r]))
+            done[r] = y
+        for r in roots:
+            if r not in done:
+                done[r] = min(max(want_y[r], lo.get(r, -BIG)), hi.get(r, BIG))
+        for u in nodes:
+            rt, o = find(u)
+            Y[u] = done[rt] + o
+        # 仕上げ: 塊を 1 つずつ、まっすぐになる接続がいちばん多い高さへ動かす(小さい段差 = 14px 未満は、はっきり曲がるより悪いとみなす)
+        JOG = 14
+        def score():
+            sc = 0.0
+            for (u, pu, v, pv), w in E.items():
+                if pu in G[u][2] and pv in G[v][2]:
+                    d = abs(Y[u] + G[u][2][pu][1] - Y[v] - G[v][2][pv][1])
+                    sc += w if d < .5 else (-w if d < JOG else 0)
+            return sc
+        members = collections.defaultdict(list)
+        for u in nodes:
+            members[find(u)[0]].append(u)
+        above = {b: (a, need) for a, b, need in pairs}
+        below = {a: (b, need) for a, b, need in pairs}
+        def fits(us, dy):
+            ss = set(us)
+            for u in us:
+                if u in above and above[u][0] not in ss and Y[u] + dy < Y[above[u][0]] + above[u][1] - 1e-6:
+                    return False
+                if u in below and below[u][0] not in ss and Y[below[u][0]] < Y[u] + dy + below[u][1] - 1e-6:
+                    return False
+            return True
+        for _ in range(3):
+            moved = False
+            for r, us in members.items():
+                if any(u in fixed for u in us):
+                    continue
+                ss = set(us)
+                cands = set()
+                for (u, pu, v, pv) in E:
+                    if (u in ss) != (v in ss) and pu in G[u][2] and pv in G[v][2]:
+                        dyy = (Y[v] + G[v][2][pv][1]) - (Y[u] + G[u][2][pu][1])
+                        cands.add(round(dyy if u in ss else -dyy, 3))
+                base = score()
+                best = (base, 0.0)
+                for dy in cands:
+                    if abs(dy) < .5 or not fits(us, dy):
+                        continue
+                    for u in us:
+                        Y[u] += dy
+                    sc = score()
+                    for u in us:
+                        Y[u] -= dy
+                    if sc > best[0] + 1e-6:
+                        best = (sc, dy)
+                if best[1]:
+                    for u in us:
+                        Y[u] += best[1]
+                    moved = True
+            if not moved:
+                break
+        self.aligned = used
+
+    def slide_pins(self, Y, G, lvl):
+        """箱(block)の端子は辺の上を動かせる: つながる相手の端子と同じ高さに動かして、まっすぐにする(辺の端から 8px、端子どうし 12px あける)"""
+        N = self.nodes
+        E = self.align_edges(lvl)
+        for u, n in N.items():
+            if n["kind"] != "block":
+                continue
+            w, h, P = G[u]
+            _, _, PB = n["_body"]
+            for side in ("L", "R"):
+                pins = [pn for pn, (dx, dy, sd) in P.items() if sd == side]
+                want = {}
+                for (a, pa, b, pb), wt in E.items():
+                    if side == "L" and b == u and pb in pins and pa in G[a][2]:
+                        want[pb] = max(want.get(pb, (0, 0)), (wt, Y[a] + G[a][2][pa][1] - Y[u]))
+                    if side == "R" and a == u and pa in pins and pb in G[b][2]:
+                        want[pa] = max(want.get(pa, (0, 0)), (wt, Y[b] + G[b][2][pb][1] - Y[u]))
+                taken = []
+                for pn in sorted(pins, key=lambda q: -want.get(q, (0, 0))[0]):
+                    dy = P[pn][1]
+                    if pn in want:
+                        t = want[pn][1]
+                        if 8 <= t <= h - 8 and all(abs(t - q) >= 12 for q in taken):
+                            dy = t
+                    if any(abs(dy - q) < 12 for q in taken):    # ぶつかる時は元の位置
+                        dy = P[pn][1]
+                    taken.append(dy)
+                    P[pn] = (P[pn][0], dy, side)
+                    if pn in PB:
+                        PB[pn] = (PB[pn][0], dy, side)
+
+    def bends(self):
+        """曲がりの数: 通路ごとの網のうち、縦の線があるもの(= 2 回以上曲がる)と、角の数"""
+        segs = bent = corners = 0
+        for c, nets in self.parts.items():
+            for net, pp in nets.items():
+                pts = [p for p in pp["src"] + pp["dst"]]
+                if not pts:
+                    continue
+                segs += 1
+                ys = [self.py(p) for p in pts]
+                if max(ys) - min(ys) > .5:
+                    bent += 1
+                    corners += sum(1 for y in ys if abs(y - min(ys)) < .5 or abs(y - max(ys)) < .5)
+        return segs, bent, corners
 
     def straighten(self, Y, G, cols, lvl):
         """同じ網の中継点を同じ高さにそろえる(駆動元のピン、行き先のピンの高さのうち、通れる所)"""
@@ -835,7 +1103,7 @@ class Gate:
             ends = []
             for lo, hi, net in items:
                 for i, e in enumerate(ends):
-                    if e < lo - 8:
+                    if e < lo - 40:                         # 同じ縦の線に見えないよう、間を 40px 以上あける時だけ同じ位置を使う
                         ends[i] = hi
                         tracks[(c, net)] = i
                         break
@@ -1005,6 +1273,8 @@ class Gate:
     def _svg(self, N0, D0, S0):
         self.layout()
         self.route()
+        sg, bt, cn = self.bends()
+        self.info.append(f"[info] 曲がり: 通路を渡る接続 {sg} 本のうち まっすぐ {sg - bt} 本・曲がる {bt} 本(角 {cn} 個)")
         N, Y = self.nodes, self.Y
         ttl = self.s.get("title", "ゲートレベル図")
         self.top = 70 + (22 if self.s.get("note") else 0) + (16 if self.s.get("groups") else 0) + self.nlanes * 14 + (20 if self.nlanes else 0) \
